@@ -19,7 +19,14 @@ export async function createViewer(canvas, topologyUrl = 'models/face_topology.j
   const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
   camera.position.set(0, 0, 3.0);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  // preserveDrawingBuffer: true so the analyze page can call canvas.toDataURL()
+  // for decision-moment snapshots (otherwise the WebGL buffer is cleared on composite).
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    alpha: true,
+    preserveDrawingBuffer: true
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
   // lights — subtle, because we mostly draw lines/points
@@ -184,6 +191,17 @@ export async function createViewer(canvas, topologyUrl = 'models/face_topology.j
     pointsGeo.getAttribute('color').needsUpdate = true;
   }
 
+  /** 任意フレームをセットして即座にレンダリングし、canvas の data URL を返す。
+   *  snapshot 用途。rAF に依存しないので、タブがバックグラウンドでも動く。 */
+  function captureFrame(pts, mime = 'image/webp', quality = 0.85) {
+    setFrame(pts);
+    renderer.render(scene, camera);
+    try { return canvas.toDataURL(mime, quality); }
+    catch (e1) {
+      try { return canvas.toDataURL('image/png'); } catch (e2) { return ''; }
+    }
+  }
+
   function setVisibility(opts) {
     Object.assign(visibility, opts);
     meshLines.visible      = visibility.mesh;
@@ -227,7 +245,7 @@ export async function createViewer(canvas, topologyUrl = 'models/face_topology.j
   return {
     setFrame, setBaseline, setVisibility, setColorizeByBaseline,
     setRotationFromMatrix, start, stop, dispose,
-    resize
+    resize, captureFrame
   };
 }
 

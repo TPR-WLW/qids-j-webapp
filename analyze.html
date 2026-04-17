@@ -47,6 +47,9 @@
   <!-- ============ Viewer (hidden until file loaded) ============ -->
   <section id="viewerRoot" class="viewer-root" hidden>
 
+    <!-- Tracking quality warning (shown only when significant drops) -->
+    <div id="trackingWarning" class="banner banner-warn viewer-banner" hidden></div>
+
     <!-- Meta summary -->
     <article class="card meta-summary">
       <header>
@@ -58,7 +61,11 @@
 
     <!-- Main: 3D viewer + playback -->
     <article class="card viewer-card">
-      <div class="viewer-layout">
+      <div class="viewer-cardhead">
+        <h2>3D ランドマークプレビュー</h2>
+        <button id="toggleViewer3d" class="btn btn-ghost btn-small" aria-expanded="true">折りたたむ ▾</button>
+      </div>
+      <div class="viewer-layout" id="viewer3dLayout">
         <div class="viewer-3d" id="viewer3dHost">
           <canvas id="viewer3dCanvas"></canvas>
           <div class="viewer-overlay">
@@ -108,6 +115,13 @@
       <h2>質問ごとのサマリー</h2>
       <p class="muted tiny">列ヘッダーをクリックで並べ替え・行クリックでその質問にジャンプ。ピーク値は<strong>ベースラインとの差分</strong>です。色の濃さは全質問の平均から何 σ 離れているかを示します。</p>
       <div class="qstats-wrap"><table id="qStatsTable" class="qstats"></table></div>
+    </article>
+
+    <!-- Decision-moment snapshots -->
+    <article class="card" id="decisionSnapshotsCard">
+      <h2>決定瞬間スナップショット</h2>
+      <p class="muted tiny">各質問で<strong>最初に答えを選んだ瞬間</strong>のランドマーク。サムネイルをクリックするとその時刻に再生ヘッドが移動します。</p>
+      <div id="decisionSnapshots" class="decision-grid"></div>
     </article>
 
     <!-- Key blendshape traces -->

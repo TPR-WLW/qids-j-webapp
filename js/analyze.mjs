@@ -32,6 +32,9 @@ const blendTraces   = $('blendTraces');
 const traceBaselineDeltaToggle = $('traceBaselineDelta');
 const blinkTimelineTrack = $('blinkTimelineTrack');
 const headposeSummary = $('headposeSummary');
+const trackingWarning = $('trackingWarning');
+const toggleViewer3d  = $('toggleViewer3d');
+const decisionSnapshots = $('decisionSnapshots');
 const heatmapCanvas    = $('heatmapCanvas');
 const heatmapLabels    = $('heatmapLabels');
 const heatmapNormalize = $('heatmapNormalize');
@@ -120,15 +123,87 @@ async function loadDoc(loadedDoc) {
 
   cachedBaseline = computeBaselineBlendshapes();
 
+  renderTrackingWarning();
   renderMeta();
   renderQuestionTimeline();
   renderQuestionStats();
+  renderDecisionSnapshots();
   renderBlendshapeTraces();
   renderBlinkTimeline();
   renderHeatmap();
   setupHeatmapTooltip();
   renderHeadposeSummary();
   renderHeadposeTraces();
+}
+
+// ---------- Tracking quality banner ----------
+function renderTrackingWarning() {
+  if (!trackingWarning) return;
+  const m = doc.meta || {};
+  const dropped = typeof m.droppedFrames === 'number' ? m.droppedFrames : 0;
+  const total = dropped + detectFrames.length;
+  if (total <= 0 || dropped / total <= 0.05) { trackingWarning.hidden = true; return; }
+  const pct = ((dropped / total) * 100).toFixed(1);
+  trackingWarning.hidden = false;
+  trackingWarning.innerHTML = `<strong>⚠ 追跡精度が低い可能性があります。</strong> ${dropped} フレーム脱落（全体の ${pct}%）。計算値や色による強調は解釈に注意してください。`;
+}
+
+// ---------- Viewer collapse ----------
+toggleViewer3d?.addEventListener('click', () => {
+  const card = toggleViewer3d.closest('.viewer-card');
+  if (!card) return;
+  const collapsed = card.classList.toggle('collapsed');
+  toggleViewer3d.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  toggleViewer3d.textContent = collapsed ? '展開する ▸' : '折りたたむ ▾';
+  // resize if opening (Three.js needs a nudge when its canvas was display:none)
+  if (!collapsed && viewer) setTimeout(() => viewer.resize?.(), 60);
+});
+
+// ---------- Decision-moment snapshots ----------
+function renderDecisionSnapshots() {
+  if (!decisionSnapshots) return;
+  if (!viewer || typeof viewer.captureFrame !== 'function') {
+    decisionSnapshots.innerHTML = '<p class="muted tiny">3D プレビューが初期化されていないため、スナップショットを生成できません。</p>';
+    return;
+  }
+  try {
+    decisionSnapshots.innerHTML = '';
+    const segs = (doc.questionSegments || []).filter(s => s.firstAnswerTime != null);
+    if (segs.length === 0) {
+      decisionSnapshots.innerHTML = '<p class="muted tiny">回答イベントが記録されていないため、スナップショットは表示されません。</p>';
+      return;
+    }
+    const savedIdx = currentIdx;
+
+    for (const s of segs) {
+      // find closest detection frame to firstAnswerTime
+      let idx = 0;
+      while (idx < detectFrames.length - 1 && detectFrames[idx].t < s.firstAnswerTime) idx++;
+      const f = detectFrames[idx];
+      // Synchronous capture — independent of rAF, so it works even
+      // when the preview / tab is in the background.
+      const imgUrl = viewer.captureFrame(f.pts);
+      const card = document.createElement('div');
+      card.className = 'decision-card';
+      card.dataset.t = String(s.firstAnswerTime);
+      card.innerHTML = `
+        ${imgUrl ? `<img src="${imgUrl}" alt="Q${s.questionNumber} スナップショット">` : '<div style="aspect-ratio:4/3;background:#0d1b24"></div>'}
+        <div class="dc-caption">
+          <span class="dc-q">Q${s.questionNumber}</span>
+          ${s.title ? `<span class="dc-title"> ${escapeHtml(s.title)}</span>` : ''}
+          <span class="dc-ans"> · 答え=${s.finalAnswer ?? '—'}</span>
+        </div>
+      `;
+      card.addEventListener('click', () => seekToTime(s.firstAnswerTime));
+      decisionSnapshots.appendChild(card);
+    }
+
+    // Restore playback position (the render loop will pick this up on its next tick)
+    renderFrame(savedIdx);
+  } catch (e) {
+    console.error('renderDecisionSnapshots failed', e);
+    decisionSnapshots.innerHTML = `<p class="muted tiny">スナップショット生成でエラー: ${escapeHtml(e.message || String(e))}</p>`;
+  }
 }
 
 // ---------- Per-question stats ----------

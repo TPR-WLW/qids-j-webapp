@@ -90,18 +90,31 @@
 .meta-grid .m-value { color: var(--c-text); font-variant-numeric: tabular-nums; word-break: break-all; }
 
 /* ------------ 3D viewer ------------ */
+.viewer-banner { margin: 0 clamp(16px, 4vw, 32px); }
+
 .viewer-card { padding: 0; overflow: hidden; }
+.viewer-cardhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  background: #f7fafc;
+  border-bottom: 1px solid var(--c-line);
+}
+.viewer-cardhead h2 { margin: 0; font-size: 16px; color: var(--c-primary-d); }
+.viewer-card.collapsed .viewer-layout { display: none; }
+.viewer-card.collapsed .playback-bar  { display: none; }
 .viewer-layout {
   display: grid;
-  grid-template-columns: 1fr 240px;
+  grid-template-columns: 1fr 220px;
   gap: 0;
-  min-height: 480px;
+  min-height: 360px;
 }
 .viewer-3d {
   position: relative;
   background: linear-gradient(135deg, #0d1b24, #1a3040);
   overflow: hidden;
-  min-height: 480px;
+  min-height: 360px;
 }
 .viewer-3d canvas { display: block; width: 100% !important; height: 100% !important; }
 .viewer-overlay {
@@ -308,6 +321,44 @@
 .pose-summary .ps-row  { color: var(--c-text); font-weight: 600; }
 .pose-summary .ps-cell { color: var(--c-text-soft); }
 .pose-summary .ps-strong { color: var(--c-text); font-weight: 600; }
+
+/* ------------ Decision snapshots ------------ */
+.decision-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.decision-card {
+  background: #0d1b24;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform var(--t), box-shadow var(--t);
+  display: flex;
+  flex-direction: column;
+}
+.decision-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+.decision-card img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: #0d1b24;
+  display: block;
+}
+.decision-card .dc-caption {
+  padding: 6px 8px;
+  background: #fff;
+  font-size: 11px;
+  color: var(--c-text);
+  line-height: 1.4;
+}
+.decision-card .dc-caption .dc-q { font-weight: 700; color: var(--c-primary-d); }
+.decision-card .dc-caption .dc-title { color: var(--c-text-soft); }
+.decision-card .dc-caption .dc-ans { font-family: "SFMono-Regular", monospace; color: var(--c-text-soft); }
 .trace canvas {
   width: 100%;
   height: 80px;
