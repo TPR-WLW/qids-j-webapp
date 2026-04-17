@@ -31,18 +31,69 @@
 
   <!-- ============ Drop zone ============ -->
   <section id="dropPanel" class="card drop-panel">
-    <div class="drop-zone" id="dropZone" tabindex="0" aria-label="特徴点 JSON をドロップ">
+    <div class="drop-zone" id="dropZone" tabindex="0" aria-label="録画または特徴点 JSON をドロップ">
       <div class="drop-icon" aria-hidden="true">📊</div>
-      <h2>特徴点 JSON をここにドロップ</h2>
+      <h2>ファイルをここにドロップ</h2>
       <p class="muted">または
         <label class="file-label">
-          ファイルを選択<input type="file" id="fileInput" accept=".json,.gz,.json.gz" hidden>
+          ファイルを選択<input type="file" id="fileInput" accept=".json,.gz,.json.gz,.webm,.mp4,video/*" multiple hidden>
         </label>
       </p>
-      <p class="tiny muted">対応形式: <code>*.json</code> / <code>*.json.gz</code>（QIDS-J webapp が書き出したもの）</p>
+      <div class="drop-formats">
+        <div class="drop-format">
+          <strong>📹 録画ファイル（webm）</strong>
+          <span class="muted tiny">録画から特徴点をその場で抽出します。セッションログ（.json）を同時にドロップすると、問題区間や回答が含まれます。</span>
+        </div>
+        <div class="drop-format">
+          <strong>📊 抽出済み特徴点（json / json.gz）</strong>
+          <span class="muted tiny">すでに特徴点が抽出されたファイル。本体から書き出した記録、または過去の v1 形式も読み込めます。</span>
+        </div>
+      </div>
+
+      <div id="webmOptions" class="webm-options" hidden>
+        <h3 class="subsection">抽出設定</h3>
+        <div class="extract-controls">
+          <label class="extract-field">
+            <span>抽出 fps</span>
+            <select id="analyzeExtractFps" class="select">
+              <option value="10">10 (最速)</option>
+              <option value="20">20</option>
+              <option value="30" selected>30 (標準)</option>
+              <option value="60">60 (高精度)</option>
+            </select>
+          </label>
+        </div>
+        <p class="muted tiny" id="webmFileLabel"></p>
+        <div class="btn-row">
+          <button id="webmStartBtn" class="btn btn-primary">🔬 この録画から抽出</button>
+          <button id="webmCancelBtn" class="btn btn-ghost">キャンセル</button>
+        </div>
+      </div>
     </div>
     <div id="loadError" class="banner banner-warn" hidden></div>
   </section>
+
+  <!-- Extraction progress modal (shared styling with index.html) -->
+  <div id="extractModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card extract-card">
+      <h2 id="extractTitle">録画から特徴点を抽出中…</h2>
+      <p id="extractPhase" class="muted">準備中</p>
+      <div class="progress-track"><div class="progress-fill-ex" id="extractFill"></div></div>
+      <div class="extract-stats">
+        <span id="extractPct">0%</span>
+        <span id="extractFrames">— / — フレーム</span>
+        <span id="extractEta">残り —</span>
+      </div>
+      <div class="extract-thumb-box">
+        <img id="extractThumb" alt="" hidden>
+        <div id="extractThumbPlaceholder" class="muted tiny">処理中の映像が表示されます</div>
+      </div>
+      <p class="tiny muted">※ 画面を閉じると処理は中止されます。</p>
+      <div class="btn-row">
+        <button id="extractCancel" class="btn btn-ghost">キャンセル</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ============ Viewer (hidden until file loaded) ============ -->
   <section id="viewerRoot" class="viewer-root" hidden>

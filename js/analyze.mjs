@@ -55,12 +55,43 @@ let speed = 1;
 let cachedBaseline = null;  // { bsName: mean } — computed once per doc
 
 // ---------- File loading ----------
-async function handleFile(file) {
+let pendingWebmBlob = null;
+let pendingSessionLog = null;
+
+async function handleFiles(fileList) {
   try {
     hideError();
-    const doc = await loadLandmarkJson(file);
-    if (!doc || !doc.frames) throw new Error('frames が見つかりません。QIDS-J webapp 出力の JSON ですか？');
-    await loadDoc(doc);
+    const files = [...fileList];
+    const videos   = files.filter(f => /\.(webm|mp4|mov)$/i.test(f.name) || /^video\//.test(f.type));
+    const jsons    = files.filter(f => /\.(json|json\.gz)$/i.test(f.name) || /\.gz$/i.test(f.name));
+
+    if (videos.length > 0) {
+      // webm flow — hold the video (+ optional session log) until user clicks "抽出開始"
+      pendingWebmBlob = videos[0];
+      pendingSessionLog = null;
+      for (const jf of jsons) {
+        const parsed = await loadLandmarkJson(jf);
+        if (parsed && parsed.events && !parsed.frames) {
+          pendingSessionLog = parsed;
+          break;
+        }
+      }
+      showWebmOptions(videos[0], pendingSessionLog);
+      return;
+    }
+
+    // No video: treat single json as fully-extracted landmarks
+    if (jsons.length === 0) throw new Error('対応する形式ではありません（webm または json を指定してください）');
+    const doc = await loadLandmarkJson(jsons[0]);
+    if (!doc || (!doc.frames && !doc.events)) {
+      throw new Error('frames または events が見つかりません');
+    }
+    if (doc.frames && doc.frames.some(f => f.pts)) {
+      await loadDoc(doc);
+    } else {
+      // session-only JSON without a webm — can't visualize landmarks
+      throw new Error('セッションログ（json）単独では特徴点がありません。対応する webm 録画も一緒にドロップしてください。');
+    }
   } catch (e) {
     console.error(e);
     showError(`読み込み失敗: ${e.message || e}`);
@@ -82,6 +113,121 @@ async function loadLandmarkJson(file) {
     text = new TextDecoder().decode(buf);
   }
   return JSON.parse(text);
+}
+
+// ---------- webm extraction flow in analyze page ----------
+const webmOptions    = $('webmOptions');
+const webmFileLabel  = $('webmFileLabel');
+const webmStartBtn   = $('webmStartBtn');
+const webmCancelBtn  = $('webmCancelBtn');
+const analyzeExtractFps = $('analyzeExtractFps');
+const extractModal   = $('extractModal');
+const extractPhase   = $('extractPhase');
+const extractFill    = $('extractFill');
+const extractPct     = $('extractPct');
+const extractFrames  = $('extractFrames');
+const extractEta     = $('extractEta');
+const extractThumb   = $('extractThumb');
+const extractThumbPh = $('extractThumbPlaceholder');
+const extractCancel  = $('extractCancel');
+let abortCtl = null;
+
+const PHASE_LABELS = {
+  'loading-library':    'MediaPipe 読み込み中…',
+  'loading-wasm':       'WASM ランタイム準備中…',
+  'fetching-model':     'モデル取得 + SHA-384 検証中…',
+  'creating-detector':  '検出器を初期化中…',
+  'preparing-video':    '録画ファイルを解析中…',
+  'extracting':         'フレーム抽出中…',
+  'finalizing':         '仕上げ中…',
+  'done':               '完了'
+};
+
+function showWebmOptions(video, session) {
+  webmOptions.hidden = false;
+  const sizeMB = (video.size / 1024 / 1024).toFixed(1);
+  const sessionHint = session ? ' · セッションログあり（問題区間を復元）' : ' · セッションログなし（質問の区間情報は推測できません）';
+  webmFileLabel.textContent = `📹 ${video.name} (${sizeMB} MB)${sessionHint}`;
+}
+function hideWebmOptions() {
+  webmOptions.hidden = true;
+  pendingWebmBlob = null;
+  pendingSessionLog = null;
+}
+
+webmCancelBtn?.addEventListener('click', hideWebmOptions);
+webmStartBtn?.addEventListener('click', async () => {
+  if (!pendingWebmBlob) return;
+  const targetFps = parseInt(analyzeExtractFps?.value || '30', 10);
+  const sessionLog = pendingSessionLog || {
+    meta: { sessionStart: new Date().toISOString(),
+            recorderFirstDataOffsetMs: 0,
+            device: { userAgent: navigator.userAgent } },
+    questionSegments: [],
+    events: []
+  };
+
+  showExtractModal();
+  abortCtl = new AbortController();
+  try {
+    const mod = await import('./extract.mjs?v=' + Date.now());
+    const doc = await mod.extractLandmarks({
+      sessionLog,
+      videoBlob: pendingWebmBlob,
+      targetFps,
+      delegate: 'auto',
+      signal: abortCtl.signal,
+      onProgress: handleProgress
+    });
+    hideExtractModal();
+    hideWebmOptions();
+    await loadDoc(doc);
+  } catch (e) {
+    hideExtractModal();
+    if (e?.name === 'AbortError') return;
+    console.error('Extraction failed', e);
+    showError('抽出に失敗しました: ' + (e?.message || String(e)));
+  } finally {
+    abortCtl = null;
+  }
+});
+
+extractCancel?.addEventListener('click', () => {
+  if (abortCtl) abortCtl.abort();
+  hideExtractModal();
+});
+
+function handleProgress(info) {
+  extractPhase.textContent = PHASE_LABELS[info.phase] || info.phase;
+  extractFill.style.width = `${Math.max(0, Math.min(100, info.pct ?? 0)).toFixed(1)}%`;
+  extractPct.textContent  = `${(info.pct ?? 0).toFixed(0)}%`;
+  if (info.framesTotal) extractFrames.textContent = `${info.framesDone ?? 0} / ${info.framesTotal} フレーム`;
+  if (info.etaSec != null) extractEta.textContent = `残り ${formatEta(info.etaSec)}`;
+  if (info.thumbDataUrl) {
+    extractThumb.src = info.thumbDataUrl;
+    extractThumb.hidden = false;
+    extractThumbPh.hidden = true;
+  }
+}
+function formatEta(sec) {
+  if (sec < 60) return `${Math.round(sec)}秒`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return `${m}分${s}秒`;
+}
+function showExtractModal() {
+  extractModal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  extractFill.style.width = '0%';
+  extractPct.textContent = '0%';
+  extractFrames.textContent = '— / — フレーム';
+  extractEta.textContent = '残り —';
+  extractThumb.hidden = true;
+  extractThumbPh.hidden = false;
+}
+function hideExtractModal() {
+  extractModal.classList.add('hidden');
+  document.body.style.overflow = '';
 }
 
 async function loadDoc(loadedDoc) {
@@ -1070,12 +1216,12 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drop-act
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropZone.classList.remove('drop-active');
-  const f = e.dataTransfer?.files?.[0];
-  if (f) handleFile(f);
+  const files = e.dataTransfer?.files;
+  if (files && files.length) handleFiles(files);
 });
 fileInput.addEventListener('change', (e) => {
-  const f = e.target.files?.[0];
-  if (f) handleFile(f);
+  const files = e.target.files;
+  if (files && files.length) handleFiles(files);
 });
 unloadBtn.addEventListener('click', () => {
   viewerRoot.hidden = true;
