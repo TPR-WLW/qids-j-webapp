@@ -10,7 +10,6 @@ import { createViewer } from './viewer3d.mjs';
 const $ = (id) => document.getElementById(id);
 const dropZone      = $('dropZone');
 const fileInput     = $('fileInput');
-const loadSampleBtn = $('loadSampleBtn');
 const loadError     = $('loadError');
 const viewerRoot    = $('viewerRoot');
 const dropPanel     = $('dropPanel');
@@ -525,18 +524,6 @@ fileInput.addEventListener('change', (e) => {
   const f = e.target.files?.[0];
   if (f) handleFile(f);
 });
-loadSampleBtn.addEventListener('click', async () => {
-  try {
-    hideError();
-    const res = await fetch('sample/sample_landmarks.json.gz');
-    if (!res.ok) throw new Error(`サンプル取得失敗: HTTP ${res.status}`);
-    const blob = await res.blob();
-    const file = new File([blob], 'sample_landmarks.json.gz', { type: 'application/gzip' });
-    await handleFile(file);
-  } catch (e) {
-    showError(`サンプル読み込み失敗: ${e.message || e}`);
-  }
-});
 unloadBtn.addEventListener('click', () => {
   viewerRoot.hidden = true;
   dropPanel.hidden = false;
@@ -633,6 +620,4 @@ if (handoffId) {
       showError('受け渡しデータの読み取りに失敗しました: ' + (e?.message || e));
     }
   })();
-} else if (params.get('sample') === '1') {
-  loadSampleBtn.click();
 }
