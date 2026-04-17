@@ -107,12 +107,27 @@ export async function extractLandmarks(opts) {
   }
   throwIfAborted(signal);
 
+  // MediaRecorder-produced webm files in Chrome don't include a Duration
+  // entry in their EBML header, so video.duration reads as Infinity.
+  // Workaround: seek past the end; Chrome then probes the container and
+  // replaces the duration with the real value. After that we rewind.
+  if (!Number.isFinite(video.duration)) {
+    onProgress({ phase: 'preparing-video', pct: 10, note: 'webm duration を修正中…' });
+    try {
+      await fixUnknownDuration(video);
+    } catch (e) {
+      URL.revokeObjectURL(videoUrl);
+      faceLandmarker.close();
+      throw new Error('動画の長さを確定できませんでした: ' + (e.message || e));
+    }
+  }
+
   const videoDurSec = video.duration;
   const videoW = video.videoWidth, videoH = video.videoHeight;
-  if (!videoDurSec || videoDurSec === Infinity) {
+  if (!videoDurSec || !Number.isFinite(videoDurSec) || videoDurSec <= 0) {
     URL.revokeObjectURL(videoUrl);
     faceLandmarker.close();
-    throw new Error('動画の長さが取得できません（ブラウザが duration を報告していません）');
+    throw new Error('動画の長さが不正です（webm が破損している可能性があります）');
   }
 
   const sampleIntervalMs = 1000 / targetFps;
@@ -123,7 +138,17 @@ export async function extractLandmarks(opts) {
   canvas.width = videoW; canvas.height = videoH;
   const ctx = canvas.getContext('2d', { willReadFrequently: false });
 
-  const recOffsetMs = (sessionLog.meta?.recorderFirstDataOffsetMs) ?? 0;
+  // Time axes:
+  //   - event.t  is (performance.now - mediaRecorder.start()) in ms
+  //   - video.currentTime * 1000 is time from the first captured frame
+  //   These share the same zero point (within a few ms of JS execution
+  //   overhead). No offset needed for alignment.
+  //
+  //   recorderFirstDataOffsetMs in the session meta is the delay before
+  //   MediaRecorder DELIVERED the first chunk (roughly the timeslice value,
+  //   ~1000ms with start(1000)). It is NOT an alignment offset — keeping
+  //   it in meta only as diagnostic info.
+  const recOffsetMs = 0;
   const frames = [];
   const tStartWall = performance.now();
   let lastThumbMs = 0;
@@ -232,6 +257,7 @@ export async function extractLandmarks(opts) {
       matFormat: '16 floats, 4x4 facial transformation matrix, column-major',
       videoWidth: videoW,
       videoHeight: videoH,
+      timebaseAligned: true,   // event.t and frame.t share the same zero (mediaRecorder.start())
       extractionOptions: {
         targetFps,
         delegate: chosenDelegate,
@@ -331,6 +357,37 @@ function seekAndWait(video, seconds) {
     video.addEventListener('error', onErr, { once: true });
     try { video.currentTime = seconds; }
     catch (e) { cleanup(); reject(e); }
+  });
+}
+
+/** Force Chrome/Edge to recompute a MediaRecorder-produced webm's duration.
+ *  These files lack a Duration field in their EBML header, so duration
+ *  reads as Infinity until the container is fully probed.  Seeking past
+ *  the end triggers the probe; once timeupdate fires with a finite value,
+ *  duration has been populated. */
+function fixUnknownDuration(video) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('timeupdate が返らない'));
+    }, 5000);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      video.removeEventListener('timeupdate', onTimeUpdate);
+      video.removeEventListener('error', onErr);
+    };
+    const onTimeUpdate = () => {
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        cleanup();
+        // Rewind so the seek-based main loop starts from 0.
+        video.currentTime = 0;
+        video.addEventListener('seeked', () => resolve(), { once: true });
+      }
+    };
+    const onErr = () => { cleanup(); reject(new Error('video error during duration probe')); };
+    video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('error', onErr);
+    video.currentTime = Number.MAX_SAFE_INTEGER;  // triggers a full-container probe
   });
 }
 

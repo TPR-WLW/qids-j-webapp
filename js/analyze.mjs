@@ -163,7 +163,7 @@ webmStartBtn?.addEventListener('click', async () => {
   const targetFps = parseInt(analyzeExtractFps?.value || '30', 10);
   const sessionLog = pendingSessionLog || {
     meta: { sessionStart: new Date().toISOString(),
-            recorderFirstDataOffsetMs: 0,
+            mediaRecorderFirstChunkDelayMs: null,
             device: { userAgent: navigator.userAgent } },
     questionSegments: [],
     events: []

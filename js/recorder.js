@@ -140,17 +140,19 @@ const FaceRecorder = (() => {
         blendshapeCount: null, // filled in by extraction
         ptsFormat: null,
         matFormat: null,
-        timeBase: 'performance.now() ms relative to recording start',
-        recorderFirstDataOffsetMs: recorderFirstDataMs,
+        timeBase: 'performance.now() ms relative to mediaRecorder.start(); shares zero with video.currentTime*1000',
+        mediaRecorderFirstChunkDelayMs: recorderFirstDataMs,  // diagnostic only — NOT an alignment offset
         recordedMime,
         eventTypes: ['question_enter', 'answer_selected', 'question_finalize',
                      'baseline_start', 'baseline_end',
                      'crisis_modal_shown', 'crisis_modal_closed'],
         device: collectDeviceMeta(),
         notes: [
-          'This session was recorded with the v2 pipeline (MediaRecorder only).',
-          'Landmarks, blendshapes, and head-pose data are not present here — extract them ' +
-            'post-hoc from the webm via js/extract.mjs or the analyze.html drop zone.'
+          'v2 pipeline: recording only. Landmarks are not present here — extract them ' +
+            'post-hoc from the webm via js/extract.mjs or the analyze.html drop zone.',
+          'Timebase: event.t and (after extraction) frame.t both measure ms since ' +
+            'mediaRecorder.start(). video.currentTime*1000 shares the same zero. No offset ' +
+            'is needed when cross-referencing events with extracted frames.'
         ]
       },
       questionSegments: computeQuestionSegments(),
