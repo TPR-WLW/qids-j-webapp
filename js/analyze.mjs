@@ -289,33 +289,44 @@ function collectBlendshapeKeys() {
   return [...set].sort();
 }
 
-// ---------- Blendshape traces ----------
-const KEY_BS = [
-  'mouthSmileLeft', 'mouthSmileRight',
-  'mouthFrownLeft', 'mouthFrownRight',
-  'browInnerUp', 'browDownLeft',
-  'eyeBlinkLeft', 'eyeBlinkRight',
-  'jawOpen',
-  'mouthPucker',
-  'eyeSquintLeft', 'eyeSquintRight'
+// ---------- Blendshape traces (L/R averaged) ----------
+const TRACE_DEFS = [
+  { label: 'Smile',         keys: ['mouthSmileLeft', 'mouthSmileRight'] },
+  { label: 'Frown',         keys: ['mouthFrownLeft', 'mouthFrownRight'] },
+  { label: 'Brow inner up', keys: ['browInnerUp'] },
+  { label: 'Brow down',     keys: ['browDownLeft', 'browDownRight'] },
+  { label: 'Blink',         keys: ['eyeBlinkLeft', 'eyeBlinkRight'] },
+  { label: 'Jaw open',      keys: ['jawOpen'] },
 ];
+
+/** 复数キーの frame 内平均（単キーならそのまま） */
+function averageBs(bs, keys) {
+  if (!bs) return 0;
+  let sum = 0, n = 0;
+  for (const k of keys) {
+    const v = bs[k];
+    if (typeof v === 'number') { sum += v; n++; }
+  }
+  return n ? sum / n : 0;
+}
 
 function renderBlendshapeTraces() {
   blendTraces.innerHTML = '';
-  for (const key of KEY_BS) {
+  for (const def of TRACE_DEFS) {
     const box = document.createElement('div');
     box.className = 'trace';
-    box.dataset.bsKey = key;
+    box.dataset.bsKeys = def.keys.join(',');
+    const lrHint = def.keys.length > 1 ? '<span class="muted tiny" style="margin-left:6px">L/R 平均</span>' : '';
     box.innerHTML = `
-      <div class="trace-label"><strong>${escapeHtml(key)}</strong><span data-role="val">—</span></div>
+      <div class="trace-label"><strong>${escapeHtml(def.label)}</strong>${lrHint}<span data-role="val">—</span></div>
       <canvas></canvas>
     `;
     blendTraces.appendChild(box);
-    drawTrace(box.querySelector('canvas'), key, 0, 1);
+    drawTrace(box.querySelector('canvas'), def.keys, 0, 1);
   }
 }
 
-function drawTrace(canvas, key, vmin, vmax) {
+function drawTrace(canvas, keys, vmin, vmax) {
   const dpr = devicePixelRatio || 1;
   const w = canvas.clientWidth  || 300;
   const h = 80;
@@ -349,14 +360,14 @@ function drawTrace(canvas, key, vmin, vmax) {
     ctx.fillRect(x1, 0, x2 - x1, h);
   }
 
-  // trace line
+  // trace line — per-frame mean of the given keys
   ctx.strokeStyle = '#3d6b8f';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   let first = true;
   for (let i = 0; i < detectFrames.length; i++) {
     const f = detectFrames[i];
-    const v = f.bs?.[key] ?? 0;
+    const v = averageBs(f.bs, keys);
     const x = ((f.t - t0) / dur) * w;
     const y = h - ((v - vmin) / (vmax - vmin)) * (h - 4) - 2;
     if (first) { ctx.moveTo(x, y); first = false; } else { ctx.lineTo(x, y); }
@@ -439,13 +450,14 @@ function updatePlayheads(t) {
   const dur = tEnd - t0;
   const pct = ((t - t0) / dur) * 100;
 
-  // Blendshape value readouts
+  // Blendshape value readouts (per-frame mean of each trace's keys)
   const f = detectFrames[currentIdx];
   if (f?.bs) {
     for (const trace of blendTraces.children) {
-      const k = trace.dataset.bsKey;
-      const val = f.bs[k];
-      if (val != null) trace.querySelector('[data-role="val"]').textContent = val.toFixed(3);
+      const keys = (trace.dataset.bsKeys || '').split(',').filter(Boolean);
+      if (!keys.length) continue;
+      const val = averageBs(f.bs, keys);
+      trace.querySelector('[data-role="val"]').textContent = val.toFixed(3);
     }
   }
   if (f?.mat) {
