@@ -23,6 +23,7 @@ const FaceRecorder = (() => {
   let chunks = [];
   let recordedBlob = null;
   let recordedMime = 'video/webm';
+  let recorderFirstDataMs = null;  // MediaRecorder 最初の data-available との時間基オフセット
 
   // ---- Timing ----
   let sessionStartIso = null;   // 人間可読な開始日時
@@ -89,7 +90,16 @@ const FaceRecorder = (() => {
       recordedMime = pickMime();
       mediaRecorder = new MediaRecorder(stream, { mimeType: recordedMime });
       chunks = [];
-      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      recorderFirstDataMs = null;
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          if (recorderFirstDataMs === null) {
+            // 最初のチャンク（この時点で録画はすでに開始直後。perfStart との差は通常 ~1秒）
+            recorderFirstDataMs = +(performance.now() - perfStartMs).toFixed(2);
+          }
+          chunks.push(e.data);
+        }
+      };
       mediaRecorder.onstop = () => { recordedBlob = new Blob(chunks, { type: recordedMime }); };
       mediaRecorder.start(1000);
 
@@ -161,6 +171,17 @@ const FaceRecorder = (() => {
   function getMime()  { return recordedMime; }
 
   function getLandmarkLog() {
+    // 検出フレーム統計
+    const detectFrames = frames.filter(f => f.pts);
+    let actualFps = null;
+    let droppedFrames = null;
+    if (detectFrames.length >= 2) {
+      const durSec = (detectFrames[detectFrames.length - 1].t - detectFrames[0].t) / 1000;
+      actualFps = +(detectFrames.length / durSec).toFixed(2);
+      // 期待フレーム数は durSec * TARGET_FPS；失われた分
+      droppedFrames = Math.max(0, Math.round(durSec * TARGET_FPS) - detectFrames.length);
+    }
+
     return {
       meta: {
         sessionStart: sessionStartIso,
@@ -170,22 +191,72 @@ const FaceRecorder = (() => {
         modelUrl: MODEL_URL,
         modelSha384: MODEL_SHA384,
         targetFps: TARGET_FPS,
+        actualFps,
+        droppedFrames,
         mirrored: true,
         pointCount: 478,
         blendshapeCount: 52,
         ptsFormat: 'array of [x, y, z], each normalized to input frame (x,y in 0..1; z is relative depth)',
         matFormat: '16 floats, 4x4 facial transformation matrix, column-major',
         timeBase: 'performance.now() ms relative to recording start',
-        eventTypes: ['question_enter', 'answer_selected', 'question_finalize'],
+        recorderFirstDataOffsetMs: recorderFirstDataMs,  // MediaRecorder の時間基と landmark の時間基のオフセット
+        recordedMime,
+        eventTypes: ['question_enter', 'answer_selected', 'question_finalize',
+                     'face_lost', 'face_found', 'crisis_modal_shown', 'crisis_modal_closed'],
+        device: collectDeviceMeta(),
         notes: [
           'frames include event markers interleaved with 30fps detection rows.',
           'questionSegments summarizes per-question timing & activity; use activeTimeRanges to slice frames.',
-          'mirrored=true means the visual overlay is flipped; stored pts are in raw (non-mirrored) frame coordinates.'
+          'mirrored=true means the visual overlay is flipped; stored pts are in raw (non-mirrored) frame coordinates.',
+          'recorderFirstDataOffsetMs: subtract this from landmark t to align with webm playback time.'
         ]
       },
       questionSegments: computeQuestionSegments(),
       frames
     };
+  }
+
+  function collectDeviceMeta() {
+    const meta = {
+      userAgent: navigator.userAgent,
+      language: navigator.language,
+      platform: navigator.platform,
+      hardwareConcurrency: navigator.hardwareConcurrency || null,
+      deviceMemoryGB: navigator.deviceMemory || null,
+      devicePixelRatio,
+      screenWidth: screen.width,
+      screenHeight: screen.height,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    };
+    // WebGL renderer 情報（GPU 推定に使用）
+    try {
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2') || c.getContext('webgl');
+      if (gl) {
+        const ext = gl.getExtension('WEBGL_debug_renderer_info');
+        if (ext) {
+          meta.webglVendor   = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+          meta.webglRenderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+        } else {
+          meta.webglVendor   = gl.getParameter(gl.VENDOR);
+          meta.webglRenderer = gl.getParameter(gl.RENDERER);
+        }
+      }
+    } catch (e) { /* best effort */ }
+    // カメラ track settings
+    try {
+      if (stream) {
+        const track = stream.getVideoTracks()[0];
+        if (track && track.getSettings) {
+          const s = track.getSettings();
+          meta.camera = {
+            width: s.width, height: s.height, frameRate: s.frameRate,
+            facingMode: s.facingMode, deviceId: s.deviceId ? 'present' : null
+          };
+        }
+      }
+    } catch (e) { /* best effort */ }
+    return meta;
   }
 
   /**
@@ -385,10 +456,12 @@ const FaceRecorder = (() => {
       drawOverlay(result);
 
       if (result && result.faceLandmarks && result.faceLandmarks.length > 0) {
+        const wasLost = faceLostNoticeShown;
         lastFaceSeenAt = t;
-        if (faceLostNoticeShown) {
+        if (wasLost) {
           faceLostNoticeShown = false;
           setStatus('録画中・解析中');
+          logEvent('face_found');
         }
 
         const lmks = result.faceLandmarks[0]; // NormalizedLandmark[]
@@ -428,6 +501,7 @@ const FaceRecorder = (() => {
           setStatus('顔を枠内に…');
           faceLostNoticeShown = true;
           if (poseEl) poseEl.textContent = '';
+          logEvent('face_lost');
         }
       }
     } catch (e) {
