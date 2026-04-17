@@ -63,25 +63,33 @@ export async function extractLandmarks(opts) {
   const modelBuffer = await fetchVerified(MODEL_URL, MODEL_SHA384);
   throwIfAborted(signal);
 
-  onProgress({ phase: 'creating-detector', pct: 8 });
-
-  // Auto delegate: try GPU first, benchmark one inference, fall back to
-  // CPU if GPU takes > 70ms/frame (target is 30fps = 33ms). On Intel UHD
-  // the WebGL backend is often slower than WASM SIMD; this picks the
-  // fastest available.
-  let chosenDelegate = (delegate === 'auto') ? 'GPU' : delegate;
-  let faceLandmarker = await buildDetector(FaceLandmarker, filesetResolver, modelBuffer, chosenDelegate);
-
+  // Auto delegate: benchmark on a disposable probe detector, then build
+  // the REAL detector fresh. This is critical because MediaPipe's VIDEO
+  // running mode requires strictly monotonically increasing timestamps
+  // ACROSS THE LIFETIME of a single detector instance. If we reused the
+  // probe detector for the main loop, the benchmark's last timestamp
+  // (~102) would be above the main loop's first timestamp (~1) and
+  // MediaPipe would reject everything with:
+  //   INVALID_ARGUMENT: Packet timestamp mismatch on a calculator ...
+  // So: benchmark → close → rebuild clean. The extra build (~50ms) is
+  // negligible next to the multi-minute extraction.
+  let chosenDelegate = delegate === 'auto' ? 'GPU' : delegate;
   if (delegate === 'auto') {
     onProgress({ phase: 'benchmarking', pct: 9 });
-    const gpuMs = await benchmarkDetector(faceLandmarker);
+    const probe = await buildDetector(FaceLandmarker, filesetResolver, modelBuffer, 'GPU');
+    let gpuMs = Infinity;
+    try { gpuMs = await benchmarkDetector(probe); } catch (e) { /* best effort */ }
+    try { probe.close(); } catch (e) {}
     if (gpuMs > 70) {
       onProgress({ phase: 'benchmarking', pct: 9, note: `GPU=${gpuMs.toFixed(0)}ms/frame → CPU にフォールバック` });
-      try { faceLandmarker.close(); } catch (e) {}
       chosenDelegate = 'CPU';
-      faceLandmarker = await buildDetector(FaceLandmarker, filesetResolver, modelBuffer, 'CPU');
+    } else {
+      onProgress({ phase: 'benchmarking', pct: 9, note: `GPU=${gpuMs.toFixed(0)}ms/frame` });
     }
   }
+
+  onProgress({ phase: 'creating-detector', pct: 10 });
+  const faceLandmarker = await buildDetector(FaceLandmarker, filesetResolver, modelBuffer, chosenDelegate);
 
   onProgress({ phase: 'preparing-video', pct: 10 });
 
