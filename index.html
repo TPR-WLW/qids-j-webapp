@@ -34,26 +34,47 @@
       </header>
 
       <article class="card">
+        <div class="banner banner-warn">
+          <strong>⚠ 本ツールは医療機器ではありません。</strong>
+          うつ病の診断や治療は行えません。結果は目安であり、医療的判断には必ず医師などの専門家にご相談ください。
+        </div>
+
         <h2>このチェックについて</h2>
         <p>本アンケートは、厚生労働省ウェブサイトで公開されている <strong>QIDS-J</strong>（16項目・自己記入式）に基づく、うつ症状のセルフチェックです。過去 <strong>7日間</strong> のご自身の状態に最も近い選択肢をお選びください。</p>
 
         <h3>所要時間</h3>
         <p>およそ 5 〜 10 分。1 問ずつ画面に表示されます。</p>
 
-        <h3>カメラによる記録について</h3>
+        <h3>カメラによる記録について（任意）</h3>
         <div class="notice">
-          <p>回答中の表情を解析するため、<strong>Web カメラで映像を録画</strong>し、顔の特徴点（ランドマーク）の変化を記録します。</p>
+          <p>ご希望の場合のみ、回答中の表情を Web カメラで録画し、顔の 478 点のランドマーク・52 種類のブレンドシェイプ・頭部姿勢を 30fps で記録します。</p>
           <ul>
-            <li>録画データと特徴点データは <strong>ブラウザ内のみ</strong> で処理され、外部へは送信されません。</li>
-            <li>アンケート終了後、ご自身でダウンロードいただけます。</li>
-            <li>同意いただけない場合は「カメラを使わずに開始」を選択してください。</li>
+            <li>取得データは <strong>ブラウザ内のみ</strong> で処理され、外部サーバへは一切送信されません。</li>
+            <li>データはブラウザのメモリ上にのみ保持され、<strong>ページを閉じる・再読み込みすると消去</strong>されます。必要に応じて終了時にダウンロードしてください。</li>
+            <li>顔の特徴点は <strong>生体認証情報に準ずる機微な情報</strong> です。同意いただけない場合は「カメラを使わずに開始」をお選びください。</li>
+            <li>カメラを使用しても、いつでも「もう一度チェックする」から中断・再開できます。</li>
           </ul>
         </div>
 
-        <label class="check">
-          <input type="checkbox" id="consentCheck">
-          <span>上記の説明を確認し、同意します</span>
-        </label>
+        <h3>同意事項</h3>
+        <div class="consent-list">
+          <label class="check">
+            <input type="checkbox" id="consentMedical">
+            <span>本ツールが <strong>医療機器ではなく</strong>、診断には使えないことを理解しました</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="consentAge">
+            <span><strong>18 歳以上</strong>、または保護者の同意のもとで使用します</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="consentData">
+            <span>データは <strong>ブラウザ内のみ</strong> で処理・保持されることを理解しました</span>
+          </label>
+          <label class="check camera-consent">
+            <input type="checkbox" id="consentCamera">
+            <span>（カメラ使用時のみ）<strong>顔の映像・特徴点の記録</strong> に同意します</span>
+          </label>
+        </div>
 
         <div class="btn-row">
           <button id="startWithCam" class="btn btn-primary" disabled>
@@ -64,7 +85,7 @@
           </button>
         </div>
 
-        <p class="tiny">※ 本ツールは医学的診断を行うものではありません。6点以上が継続する場合は医療機関にご相談ください。</p>
+        <p class="tiny">QIDS-J で 6 点以上が 2 週間以上続く場合、または Q12（死や自殺についての考え）で点数がついた場合は、<strong>できるだけ早く</strong>医療機関・専門家にご相談ください。</p>
       </article>
     </section>
 
@@ -94,6 +115,45 @@
       </article>
     </section>
 
+    <!-- ========== Crisis modal (自殺リスクに対する即時介入) ========== -->
+    <div id="crisisModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="crisisTitle">
+      <div class="modal-card">
+        <h2 id="crisisTitle">まず一度、深呼吸してください。</h2>
+        <p>今、「死にたい」「自分を傷つけたい」という気持ちを抱えているかもしれません。その気持ちを抱えているあなたは一人ではありません。</p>
+        <p><strong>いますぐ、話せる場所があります。</strong> 匿名・無料で、電話・SNS 相談を受けられます。</p>
+
+        <div class="hotline">
+          <div class="hotline-item">
+            <div class="hotline-name">いのちの電話（日本いのちの電話連盟）</div>
+            <div class="hotline-num"><a href="tel:0570064556">0570-064-556</a></div>
+            <div class="hotline-hours">10:00–22:00（毎日）</div>
+          </div>
+          <div class="hotline-item">
+            <div class="hotline-name">よりそいホットライン</div>
+            <div class="hotline-num"><a href="tel:0120279338">0120-279-338</a></div>
+            <div class="hotline-hours">24 時間対応・無料</div>
+          </div>
+          <div class="hotline-item">
+            <div class="hotline-name">SNS 相談（厚生労働省まとめ）</div>
+            <div class="hotline-num"><a href="https://www.mhlw.go.jp/mamorouyokokoro/soudan/sns/" target="_blank" rel="noopener">mhlw.go.jp/mamorouyokokoro/soudan/sns/</a></div>
+            <div class="hotline-hours">LINE / チャット各種</div>
+          </div>
+          <div class="hotline-item hotline-urgent">
+            <div class="hotline-name">緊急の場合（生命の危険があるとき）</div>
+            <div class="hotline-num"><a href="tel:119">119</a> / <a href="tel:110">110</a></div>
+            <div class="hotline-hours">救急・警察</div>
+          </div>
+        </div>
+
+        <p class="tiny">※ このメッセージは自動的に表示されています。回答を続けることも、ここで中断することもできます。</p>
+
+        <div class="btn-row">
+          <a href="https://www.mhlw.go.jp/mamorouyokokoro/" class="btn btn-primary" target="_blank" rel="noopener">支援リソースを見る</a>
+          <button id="crisisContinueBtn" class="btn btn-ghost">回答を続ける</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ========== Screen 3: 結果 ========== -->
     <section id="resultScreen" class="screen">
       <article class="card result-card">
@@ -101,6 +161,11 @@
           <h2>結果</h2>
           <p class="muted">回答ありがとうございました</p>
         </header>
+
+        <div class="banner banner-warn">
+          <strong>⚠ 本結果は医療診断ではありません。</strong>
+          うつ症状のスクリーニングに使える目安にすぎず、診断・治療には医師・心理士などの専門家の評価が必要です。
+        </div>
 
         <div class="score-display">
           <div class="score-ring" id="scoreRing">

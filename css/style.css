@@ -16,11 +16,12 @@
   --c-accent: #6cb4a0;
   --c-danger: #d97b7b;
   --c-warn: #e0a458;
-  --c-normal: #7ab892;
-  --c-mild: #a7c97b;
-  --c-moderate: #e0a458;
-  --c-severe: #d97b7b;
-  --c-extreme: #b55757;
+  /* 重症度カラー — WCAG AA 4.5:1 を白背景に対して概ね満たす濃さに調整 */
+  --c-normal: #2f8f5c;
+  --c-mild: #6a8f1e;
+  --c-moderate: #b86f11;
+  --c-severe: #c0413f;
+  --c-extreme: #942828;
   --radius: 16px;
   --radius-sm: 10px;
   --shadow: 0 6px 20px rgba(48, 79, 99, 0.08);
@@ -111,6 +112,95 @@ a:hover { text-decoration: underline; }
   background: #f0f7f3;
   border-left-color: var(--c-accent);
 }
+
+/* ---------- Safety banner ---------- */
+.banner {
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 10px 0 14px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.banner-warn {
+  background: #fff4e6;
+  border: 1px solid #f5cba3;
+  color: #7a3d00;
+}
+.banner-warn strong { color: #5a2c00; }
+
+/* ---------- Consent list ---------- */
+.consent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 12px 0 6px;
+  padding: 14px 16px;
+  background: #f7fafc;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+}
+.consent-list .check { padding: 6px 0; }
+.consent-list .camera-consent { color: var(--c-text-soft); }
+
+/* ---------- Crisis modal ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 35, 50, 0.78);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.25s ease;
+}
+.modal-overlay.hidden { display: none; }
+.modal-card {
+  background: #fff;
+  max-width: 520px;
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  border-radius: var(--radius);
+  padding: clamp(22px, 4vw, 32px);
+  box-shadow: var(--shadow-lg);
+  animation: fadeIn 0.35s ease;
+}
+.modal-card h2 {
+  margin: 0 0 10px;
+  color: var(--c-primary-d);
+  font-size: 22px;
+}
+.modal-card p { margin: 8px 0; color: var(--c-text); }
+
+.hotline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0;
+}
+.hotline-item {
+  padding: 12px 14px;
+  background: #f3f8fa;
+  border-left: 4px solid var(--c-primary);
+  border-radius: var(--radius-sm);
+}
+.hotline-item.hotline-urgent {
+  background: #ffece8;
+  border-left-color: #c0413f;
+}
+.hotline-name { font-weight: 600; color: var(--c-text); font-size: 14px; }
+.hotline-num  {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  margin: 2px 0;
+}
+.hotline-num a { color: var(--c-primary-d); text-decoration: none; }
+.hotline-num a:hover { text-decoration: underline; }
+.hotline-hours { font-size: 12px; color: var(--c-muted); }
 
 .check {
   display: flex;

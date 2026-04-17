@@ -19,9 +19,14 @@
     quiz:   $('quizScreen'),
     result: $('resultScreen')
   };
-  const consent     = $('consentCheck');
-  const startCamBtn = $('startWithCam');
-  const startNoBtn  = $('startNoCam');
+  const consentMedical = $('consentMedical');
+  const consentAge     = $('consentAge');
+  const consentData    = $('consentData');
+  const consentCamera  = $('consentCamera');
+  const startCamBtn    = $('startWithCam');
+  const startNoBtn     = $('startNoCam');
+  const crisisModal    = $('crisisModal');
+  const crisisContinue = $('crisisContinueBtn');
 
   const progressText   = $('progressText');
   const progressDomain = $('progressDomain');
@@ -54,10 +59,13 @@
   });
 
   // ---------- Intro screen ----------
-  consent.addEventListener('change', () => {
-    const ok = consent.checked;
-    startCamBtn.disabled = !ok;
-    startNoBtn.disabled  = !ok;
+  function updateStartButtonsDisabled() {
+    const baseOk = consentMedical.checked && consentAge.checked && consentData.checked;
+    startNoBtn.disabled  = !baseOk;
+    startCamBtn.disabled = !(baseOk && consentCamera.checked);
+  }
+  [consentMedical, consentAge, consentData, consentCamera].forEach(el => {
+    el.addEventListener('change', updateStartButtonsDisabled);
   });
 
   startCamBtn.addEventListener('click', async () => {
@@ -150,7 +158,34 @@
     });
     nextBtn.disabled = false;
     if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });
+
+    // Q12（index 11, 自殺念慮）で 2 以上 → 危機介入モーダルを即時表示
+    if (state.current === 11 && idx >= 2) {
+      showCrisisModal();
+    }
   }
+
+  function showCrisisModal() {
+    if (!crisisModal) return;
+    if (state.crisisShownForSession) return;  // 1 セッションに 1 度だけ
+    state.crisisShownForSession = true;
+    crisisModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    if (state.useCamera) FaceRecorder.logEvent('crisis_modal_shown');
+    // フォーカスを Continue ボタンに移す（視覚的インパクトを和らげる）
+    setTimeout(() => crisisContinue?.focus(), 100);
+  }
+  function hideCrisisModal() {
+    if (!crisisModal) return;
+    crisisModal.classList.add('hidden');
+    document.body.style.overflow = '';
+    if (state.useCamera) FaceRecorder.logEvent('crisis_modal_closed');
+  }
+  crisisContinue?.addEventListener('click', hideCrisisModal);
+  crisisModal?.addEventListener('click', (e) => { if (e.target === crisisModal) hideCrisisModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !crisisModal.classList.contains('hidden')) hideCrisisModal();
+  });
 
   prevBtn.addEventListener('click', () => {
     if (state.current > 0) {
@@ -323,14 +358,18 @@
   });
 
   restartBtn.addEventListener('click', () => {
+    if (state.useCamera) {
+      const confirmed = confirm('記録したデータと映像は失われます。やり直しますか？');
+      if (!confirmed) return;
+    }
     state.current = 0;
     state.answers.fill(null);
     state.result = null;
     state.useCamera = false;
+    state.crisisShownForSession = false;
     FaceRecorder.showPanel(false);
-    consent.checked = false;
-    startCamBtn.disabled = true;
-    startNoBtn.disabled  = true;
+    [consentMedical, consentAge, consentData, consentCamera].forEach(el => { el.checked = false; });
+    updateStartButtonsDisabled();
     startCamBtn.innerHTML = '<span class="ic">●</span> カメラを使って開始';
     switchScreen('intro');
   });
