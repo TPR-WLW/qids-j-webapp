@@ -105,6 +105,33 @@
     el.addEventListener('change', updateStartButtonsDisabled);
   });
 
+  // ---------- Camera settings (persisted to localStorage) ----------
+  const CAM_SETTINGS_KEY = 'qids-j-cam-settings-v1';
+  const RESOLUTIONS = {
+    '480':  { width: 640,  height: 480  },
+    '720':  { width: 1280, height: 720  },
+    '1080': { width: 1920, height: 1080 }
+  };
+  const camResSel = $('camResolution');
+  const camFpsSel = $('camFramerate');
+  function loadCamSettings() {
+    try {
+      const obj = JSON.parse(localStorage.getItem(CAM_SETTINGS_KEY) || '{}');
+      if (obj.resolution && camResSel) camResSel.value = obj.resolution;
+      if (obj.frameRate  && camFpsSel) camFpsSel.value = obj.frameRate;
+    } catch (e) {}
+  }
+  function saveCamSettings() {
+    try {
+      localStorage.setItem(CAM_SETTINGS_KEY, JSON.stringify({
+        resolution: camResSel?.value ?? '720',
+        frameRate:  camFpsSel?.value ?? '30'
+      }));
+    } catch (e) {}
+  }
+  [camResSel, camFpsSel].forEach(el => el?.addEventListener('change', saveCamSettings));
+  loadCamSettings();
+
   startCamBtn.addEventListener('click', async () => {
     if (!FaceRecorder.isSupported()) {
       alert('お使いのブラウザはカメラ録画に対応していません。\n「カメラを使わずに開始」でお進みください。');
@@ -112,7 +139,9 @@
     }
     startCamBtn.disabled = true;
     startCamBtn.innerHTML = '起動中…';
-    const ok = await FaceRecorder.start();
+    const res = RESOLUTIONS[camResSel?.value] || RESOLUTIONS['720'];
+    const fps = parseInt(camFpsSel?.value || '30', 10);
+    const ok = await FaceRecorder.start({ width: res.width, height: res.height, frameRate: fps });
     if (ok) {
       state.useCamera = true;
       await runBaselineCapture();  // 3秒のベースライン撮影を挟む

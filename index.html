@@ -91,6 +91,28 @@
           </label>
         </div>
 
+        <details class="camera-settings">
+          <summary>カメラ設定（オプション）</summary>
+          <div class="camera-settings-grid">
+            <label class="extract-field">
+              <span>解像度</span>
+              <select id="camResolution" class="select">
+                <option value="480">480p (640×480・最も軽い)</option>
+                <option value="720" selected>720p HD (1280×720・推奨)</option>
+                <option value="1080">1080p Full HD (1920×1080・最も高精細)</option>
+              </select>
+            </label>
+            <label class="extract-field">
+              <span>フレームレート</span>
+              <select id="camFramerate" class="select">
+                <option value="30" selected>30 fps</option>
+                <option value="60">60 fps (対応カメラのみ)</option>
+              </select>
+            </label>
+          </div>
+          <p class="tiny muted">※ お使いのカメラが対応していない設定は、自動的に近い値に調整されます。実際に録画された解像度・fps は録画後にセッションログの <code>device.camera</code> で確認できます。</p>
+        </details>
+
         <div class="btn-row">
           <button id="startWithCam" class="btn btn-primary" disabled>
             <span class="ic">●</span> カメラを使って開始

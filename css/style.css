@@ -307,6 +307,63 @@ select.select {
   margin: 10px 0 6px;
 }
 
+/* ---------- Camera settings (intro) ---------- */
+.camera-settings {
+  margin: 14px 0 4px;
+  padding: 10px 14px;
+  background: #f7fafc;
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+}
+.camera-settings > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--c-text-soft);
+  font-weight: 600;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.camera-settings > summary::before {
+  content: '▸';
+  display: inline-block;
+  font-size: 10px;
+  color: var(--c-muted);
+  transition: transform 0.15s ease;
+}
+.camera-settings[open] > summary::before { transform: rotate(90deg); }
+.camera-settings > summary::-webkit-details-marker { display: none; }
+
+.camera-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 14px;
+  margin: 10px 0 4px;
+}
+.camera-settings .select {
+  padding: 6px 10px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--c-text);
+}
+.camera-settings .extract-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--c-text-soft);
+}
+.camera-settings code {
+  background: #eaf3f8;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
 .check {
   display: flex;
   gap: 10px;

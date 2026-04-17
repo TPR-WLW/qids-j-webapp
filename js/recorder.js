@@ -42,12 +42,26 @@ const FaceRecorder = (() => {
     panelEl  = ui.panel;
   }
 
-  async function start() {
+  /**
+   * @param {{ width?: number, height?: number, frameRate?: number }} [options]
+   *   All fields are 'ideal' constraints — the browser will pick the
+   *   closest supported setting. The actually-negotiated resolution and
+   *   frame rate are recorded in meta.device.camera.
+   */
+  async function start(options) {
     try {
       showPanel(true);
       setStatus('カメラへアクセス中…');
+      const width     = options?.width     || 1280;   // 720p default
+      const height    = options?.height    || 720;
+      const frameRate = options?.frameRate || 30;
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        video: {
+          width:     { ideal: width },
+          height:    { ideal: height },
+          frameRate: { ideal: frameRate },
+          facingMode: 'user'
+        },
         audio: false
       });
       videoEl.srcObject = stream;
