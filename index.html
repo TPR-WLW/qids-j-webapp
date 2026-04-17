@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#5b8fb9">
+  <title>QIDS-J | 抑うつ症状チェック</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- face-api.js (vladmandic fork — maintained, better compatibility) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.js"></script>
+</head>
+<body>
+  <!-- カメラプレビュー（常時表示／録画中） -->
+  <div id="cameraPanel" class="camera-panel hidden" aria-hidden="true">
+    <div class="camera-wrapper">
+      <video id="cameraVideo" autoplay muted playsinline></video>
+      <canvas id="overlayCanvas"></canvas>
+      <div class="rec-badge" id="recBadge">
+        <span class="rec-dot"></span>
+        <span id="recTime">00:00</span>
+      </div>
+    </div>
+    <div class="camera-status" id="cameraStatus">カメラ準備中…</div>
+  </div>
+
+  <main class="container">
+    <!-- ========== Screen 1: イントロ ========== -->
+    <section id="introScreen" class="screen active">
+      <header class="brand">
+        <div class="brand-mark">QIDS-J</div>
+        <h1>簡易抑うつ症状尺度</h1>
+        <p class="subtitle">Quick Inventory of Depressive Symptomatology — 日本語版</p>
+      </header>
+
+      <article class="card">
+        <h2>このチェックについて</h2>
+        <p>本アンケートは、厚生労働省ウェブサイトで公開されている <strong>QIDS-J</strong>（16項目・自己記入式）に基づく、うつ症状のセルフチェックです。過去 <strong>7日間</strong> のご自身の状態に最も近い選択肢をお選びください。</p>
+
+        <h3>所要時間</h3>
+        <p>およそ 5 〜 10 分。1 問ずつ画面に表示されます。</p>
+
+        <h3>カメラによる記録について</h3>
+        <div class="notice">
+          <p>回答中の表情を解析するため、<strong>Web カメラで映像を録画</strong>し、顔の特徴点（ランドマーク）の変化を記録します。</p>
+          <ul>
+            <li>録画データと特徴点データは <strong>ブラウザ内のみ</strong> で処理され、外部へは送信されません。</li>
+            <li>アンケート終了後、ご自身でダウンロードいただけます。</li>
+            <li>同意いただけない場合は「カメラを使わずに開始」を選択してください。</li>
+          </ul>
+        </div>
+
+        <label class="check">
+          <input type="checkbox" id="consentCheck">
+          <span>上記の説明を確認し、同意します</span>
+        </label>
+
+        <div class="btn-row">
+          <button id="startWithCam" class="btn btn-primary" disabled>
+            <span class="ic">●</span> カメラを使って開始
+          </button>
+          <button id="startNoCam" class="btn btn-ghost" disabled>
+            カメラを使わずに開始
+          </button>
+        </div>
+
+        <p class="tiny">※ 本ツールは医学的診断を行うものではありません。6点以上が継続する場合は医療機関にご相談ください。</p>
+      </article>
+    </section>
+
+    <!-- ========== Screen 2: 問卷 ========== -->
+    <section id="quizScreen" class="screen">
+      <div class="progress">
+        <div class="progress-info">
+          <span id="progressText">1 / 16</span>
+          <span id="progressDomain" class="tag">睡眠</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+      </div>
+
+      <article class="card question-card">
+        <div class="qhead">
+          <span class="qnum" id="qNum">Q1</span>
+          <h2 id="qTitle">質問タイトル</h2>
+        </div>
+        <div class="options" id="optionsList"></div>
+
+        <div class="btn-row btn-row-split">
+          <button id="prevBtn" class="btn btn-ghost">戻る</button>
+          <button id="nextBtn" class="btn btn-primary" disabled>次へ</button>
+        </div>
+      </article>
+    </section>
+
+    <!-- ========== Screen 3: 結果 ========== -->
+    <section id="resultScreen" class="screen">
+      <article class="card result-card">
+        <header class="result-head">
+          <h2>結果</h2>
+          <p class="muted">回答ありがとうございました</p>
+        </header>
+
+        <div class="score-display">
+          <div class="score-ring" id="scoreRing">
+            <div class="score-number"><span id="scoreNum">0</span><small>/27</small></div>
+          </div>
+          <div class="severity-box">
+            <div class="label">重症度</div>
+            <div class="severity" id="severityText">—</div>
+          </div>
+        </div>
+
+        <div class="severity-scale">
+          <div class="sev-item" data-sev="normal"><span>0 – 5</span>正常</div>
+          <div class="sev-item" data-sev="mild"><span>6 – 10</span>軽度</div>
+          <div class="sev-item" data-sev="moderate"><span>11 – 15</span>中等度</div>
+          <div class="sev-item" data-sev="severe"><span>16 – 20</span>重度</div>
+          <div class="sev-item" data-sev="extreme"><span>21 – 27</span>きわめて重度</div>
+        </div>
+
+        <div class="notice notice-soft">
+          <p id="resultAdvice">—</p>
+        </div>
+
+        <h3>記録データのダウンロード</h3>
+        <div class="btn-row btn-row-wrap">
+          <button id="downloadVideo" class="btn btn-outline" disabled>🎥 映像を保存</button>
+          <button id="downloadLandmarks" class="btn btn-outline" disabled>📊 特徴点データ(JSON)</button>
+          <button id="downloadAnswers" class="btn btn-outline">📝 回答CSV</button>
+        </div>
+
+        <div class="btn-row">
+          <button id="restartBtn" class="btn btn-primary">もう一度チェックする</button>
+        </div>
+
+        <p class="tiny">※ 本結果は医学的診断ではありません。気になる症状が続く場合は、専門の医療機関へご相談ください。</p>
+      </article>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <small>出典：<a href="https://www.mhlw.go.jp/bunya/shougaihoken/kokoro/dl/02.pdf" target="_blank" rel="noopener">厚生労働省「簡易抑うつ症状尺度（QIDS-J）」</a></small>
+  </footer>
+
+  <script src="js/questions.js"></script>
+  <script src="js/recorder.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
