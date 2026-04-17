@@ -121,6 +121,7 @@ const webmFileLabel  = $('webmFileLabel');
 const webmStartBtn   = $('webmStartBtn');
 const webmCancelBtn  = $('webmCancelBtn');
 const analyzeExtractFps = $('analyzeExtractFps');
+const analyzeExtractSmoothing = $('analyzeExtractSmoothing');
 const extractModal   = $('extractModal');
 const extractPhase   = $('extractPhase');
 const extractFill    = $('extractFill');
@@ -137,6 +138,7 @@ const PHASE_LABELS = {
   'loading-wasm':       'WASM ランタイム準備中…',
   'fetching-model':     'モデル取得 + SHA-384 検証中…',
   'creating-detector':  '検出器を初期化中…',
+  'benchmarking':       'GPU/CPU 性能測定中…',
   'preparing-video':    '録画ファイルを解析中…',
   'extracting':         'フレーム抽出中…',
   'finalizing':         '仕上げ中…',
@@ -171,11 +173,14 @@ webmStartBtn?.addEventListener('click', async () => {
   abortCtl = new AbortController();
   try {
     const mod = await import('./extract.mjs?v=' + Date.now());
+    const alpha = parseFloat(analyzeExtractSmoothing?.value || '0');
+    const smoothing = alpha > 0 && alpha < 1 ? { alpha } : null;
     const doc = await mod.extractLandmarks({
       sessionLog,
       videoBlob: pendingWebmBlob,
       targetFps,
       delegate: 'auto',
+      smoothing,
       signal: abortCtl.signal,
       onProgress: handleProgress
     });

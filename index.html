@@ -270,6 +270,15 @@
               <option value="60">60 (高精度・動画が 60fps 以上の場合のみ有効)</option>
             </select>
           </label>
+          <label class="extract-field">
+            <span>時間平滑化（EMA）</span>
+            <select id="extractSmoothing" class="select">
+              <option value="0" selected>オフ</option>
+              <option value="0.6">弱 (α=0.6)</option>
+              <option value="0.4">中 (α=0.4)</option>
+              <option value="0.2">強 (α=0.2)</option>
+            </select>
+          </label>
         </div>
         <div class="btn-row btn-row-wrap">
           <button id="openAnalyzerBtn" class="btn btn-primary" disabled title="この記録から特徴点を抽出して分析ビューアーで開きます">

@@ -416,6 +416,7 @@
   const extractThumbPh  = $('extractThumbPlaceholder');
   const extractCancel   = $('extractCancel');
   const extractFpsSel   = $('extractFps');
+  const extractSmSel    = $('extractSmoothing');
   let extractAbort = null;
 
   const PHASE_LABELS = {
@@ -423,6 +424,7 @@
     'loading-wasm':       'WASM ランタイム準備中…',
     'fetching-model':     'モデルダウンロード + SHA-384 検証中…',
     'creating-detector':  '検出器を初期化中…',
+    'benchmarking':       'GPU/CPU 性能測定中…',
     'preparing-video':    '録画ファイルを解析中…',
     'extracting':         'フレーム抽出中…',
     'finalizing':         '仕上げ中…',
@@ -462,9 +464,12 @@
     try {
       // lazy import the module (loads MediaPipe on demand)
       const mod = await import('./extract.mjs?v=' + Date.now());
+      const alpha = parseFloat(extractSmSel?.value || '0');
+      const smoothing = alpha > 0 && alpha < 1 ? { alpha } : null;
       const doc = await mod.extractLandmarks({
         sessionLog, videoBlob, targetFps,
         delegate: 'auto',
+        smoothing,
         signal: extractAbort.signal,
         onProgress: (info) => {
           const label = PHASE_LABELS[info.phase] || info.phase;

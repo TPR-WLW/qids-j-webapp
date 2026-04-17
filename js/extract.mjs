@@ -30,7 +30,8 @@ const MATRIX_PRECISION = 5;
  *   sessionLog: object,            // output of FaceRecorder.getSessionLog() + answers/result
  *   videoBlob: Blob,               // the recorded webm
  *   targetFps?: number,            // default 30
- *   delegate?: 'GPU'|'CPU'|'auto', // default 'auto' (benchmark first frame)
+ *   delegate?: 'GPU'|'CPU'|'auto', // default 'auto' (benchmark, fall back to CPU if GPU is slow)
+ *   smoothing?: { alpha: number } | null, // EMA smoothing for pts + bs (null = off)
  *   onProgress?: (info) => void,   // { phase, pct, framesDone, framesTotal, etaSec, thumbDataUrl? }
  *   signal?: AbortSignal           // cancel token
  * }} ExtractOptions
@@ -41,6 +42,7 @@ export async function extractLandmarks(opts) {
     sessionLog, videoBlob,
     targetFps = 30,
     delegate = 'auto',
+    smoothing = null,
     onProgress = () => {},
     signal
   } = opts;
@@ -62,14 +64,24 @@ export async function extractLandmarks(opts) {
   throwIfAborted(signal);
 
   onProgress({ phase: 'creating-detector', pct: 8 });
-  const chosenDelegate = (delegate === 'auto') ? 'GPU' : delegate;
-  const faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-    baseOptions: { modelAssetBuffer: new Uint8Array(modelBuffer), delegate: chosenDelegate },
-    runningMode: 'VIDEO',
-    numFaces: 1,
-    outputFaceBlendshapes: true,
-    outputFacialTransformationMatrixes: true
-  });
+
+  // Auto delegate: try GPU first, benchmark one inference, fall back to
+  // CPU if GPU takes > 70ms/frame (target is 30fps = 33ms). On Intel UHD
+  // the WebGL backend is often slower than WASM SIMD; this picks the
+  // fastest available.
+  let chosenDelegate = (delegate === 'auto') ? 'GPU' : delegate;
+  let faceLandmarker = await buildDetector(FaceLandmarker, filesetResolver, modelBuffer, chosenDelegate);
+
+  if (delegate === 'auto') {
+    onProgress({ phase: 'benchmarking', pct: 9 });
+    const gpuMs = await benchmarkDetector(faceLandmarker);
+    if (gpuMs > 70) {
+      onProgress({ phase: 'benchmarking', pct: 9, note: `GPU=${gpuMs.toFixed(0)}ms/frame → CPU にフォールバック` });
+      try { faceLandmarker.close(); } catch (e) {}
+      chosenDelegate = 'CPU';
+      faceLandmarker = await buildDetector(FaceLandmarker, filesetResolver, modelBuffer, 'CPU');
+    }
+  }
 
   onProgress({ phase: 'preparing-video', pct: 10 });
 
@@ -189,6 +201,13 @@ export async function extractLandmarks(opts) {
 
   onProgress({ phase: 'finalizing', pct: 97 });
 
+  // Optional temporal smoothing (EMA)
+  let smoothed = false;
+  if (smoothing && typeof smoothing.alpha === 'number' && smoothing.alpha > 0 && smoothing.alpha < 1) {
+    applySmoothing(frames, smoothing.alpha);
+    smoothed = true;
+  }
+
   // Merge events (event rows from recorder) with extracted detection frames
   const events = (sessionLog.events || []).map(e => ({ ...e }));
   const mergedFrames = [...events, ...frames].sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
@@ -213,7 +232,12 @@ export async function extractLandmarks(opts) {
       matFormat: '16 floats, 4x4 facial transformation matrix, column-major',
       videoWidth: videoW,
       videoHeight: videoH,
-      extractionOptions: { targetFps, delegate: chosenDelegate }
+      extractionOptions: {
+        targetFps,
+        delegate: chosenDelegate,
+        delegateAutoSelected: delegate === 'auto',
+        smoothing: smoothed ? { alpha: smoothing.alpha } : null
+      }
     },
     frames: mergedFrames
   };
@@ -223,6 +247,69 @@ export async function extractLandmarks(opts) {
 }
 
 // ---------------- helpers ----------------
+
+async function buildDetector(FaceLandmarker, filesetResolver, modelBuffer, delegate) {
+  return FaceLandmarker.createFromOptions(filesetResolver, {
+    baseOptions: { modelAssetBuffer: new Uint8Array(modelBuffer), delegate },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    outputFaceBlendshapes: true,
+    outputFacialTransformationMatrixes: true
+  });
+}
+
+/** Run a couple of throwaway detections on a dummy canvas and report the
+ *  median ms/frame. Helps pick between GPU and CPU on weak integrated GPUs. */
+async function benchmarkDetector(faceLandmarker) {
+  const c = document.createElement('canvas');
+  c.width = 320; c.height = 240;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 320, 240);
+  g.addColorStop(0, '#888'); g.addColorStop(1, '#333');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 320, 240);
+  // Warm the shaders (first call is disproportionately slow)
+  try { faceLandmarker.detectForVideo(c, 1); } catch (e) {}
+  const samples = [];
+  for (let i = 0; i < 3; i++) {
+    const t0 = performance.now();
+    try { faceLandmarker.detectForVideo(c, 100 + i); } catch (e) {}
+    samples.push(performance.now() - t0);
+  }
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor(samples.length / 2)];
+}
+
+/** Exponential moving average smoother. Applied post-extraction. */
+function applySmoothing(frames, alpha) {
+  if (!frames.length || alpha <= 0 || alpha >= 1) return frames;
+  let prevPts = null;
+  const prevBs = {};
+  for (const f of frames) {
+    if (!f.pts) continue;
+    if (!prevPts) {
+      prevPts = f.pts.map(p => p.slice());
+    } else {
+      for (let i = 0; i < f.pts.length; i++) {
+        f.pts[i][0] = +((alpha * f.pts[i][0] + (1 - alpha) * prevPts[i][0])).toFixed(POINT_PRECISION);
+        f.pts[i][1] = +((alpha * f.pts[i][1] + (1 - alpha) * prevPts[i][1])).toFixed(POINT_PRECISION);
+        f.pts[i][2] = +((alpha * f.pts[i][2] + (1 - alpha) * prevPts[i][2])).toFixed(POINT_PRECISION);
+        prevPts[i][0] = f.pts[i][0];
+        prevPts[i][1] = f.pts[i][1];
+        prevPts[i][2] = f.pts[i][2];
+      }
+    }
+    if (f.bs) {
+      for (const [k, v] of Object.entries(f.bs)) {
+        const prev = prevBs[k];
+        const newV = prev == null ? v : alpha * v + (1 - alpha) * prev;
+        f.bs[k] = +newV.toFixed(SCORE_PRECISION);
+        prevBs[k] = newV;
+      }
+    }
+  }
+  return frames;
+}
 
 function throwIfAborted(signal) {
   if (signal?.aborted) {
