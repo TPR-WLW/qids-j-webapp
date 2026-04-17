@@ -64,6 +64,36 @@ def summarize(doc: dict) -> None:
         print(f"  total score  : {res['total']} / 27")
         print(f"  severity     : {res['severity']}")
 
+    segs = doc.get("questionSegments") or []
+    if segs:
+        print(f"\n--- per-question timing ---")
+        for s in segs:
+            hesitation = (
+                (s["firstAnswerTime"] - s["enterTimes"][0]) / 1000
+                if s.get("firstAnswerTime") is not None and s.get("enterTimes")
+                else None
+            )
+            print(
+                f"  Q{s['questionNumber']:>2} {s.get('title',''):<10}"
+                f"  dur={s['activeDurationMs']/1000:>5.1f}s"
+                f"  visits={len(s['enterTimes']):>1}"
+                f"  changes={s['answerEventCount']:>1}"
+                f"  answer={s.get('finalAnswer')}"
+                + (f"  hesitation={hesitation:>4.1f}s" if hesitation is not None else "")
+            )
+
+
+def frames_of_question(doc, q_index):
+    """Q(q_index+1) に滞在していた間の検出フレーム（pts を持つ行）を返す。"""
+    seg = next((s for s in doc.get("questionSegments", []) if s["q"] == q_index), None)
+    if not seg:
+        return []
+    ranges = seg["activeTimeRanges"]
+    return [
+        f for f in doc.get("frames", [])
+        if "pts" in f and any(a <= f["t"] < b for (a, b) in ranges)
+    ]
+
 
 def to_dataframe(doc: dict):
     """

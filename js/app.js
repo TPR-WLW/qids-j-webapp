@@ -149,6 +149,7 @@
       el.classList.toggle('selected', j === idx);
     });
     nextBtn.disabled = false;
+    if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });
   }
 
   prevBtn.addEventListener('click', () => {
@@ -160,6 +161,9 @@
 
   nextBtn.addEventListener('click', async () => {
     if (state.answers[state.current] === null) return;
+    if (state.useCamera) {
+      FaceRecorder.logEvent('question_finalize', { a: state.answers[state.current] });
+    }
     if (state.current < QUESTIONS.length - 1) {
       state.current++;
       renderQuestion();
@@ -253,6 +257,14 @@
   // ---------- Landmark downloads ----------
   function buildLandmarkOut() {
     const data = FaceRecorder.getLandmarkLog();
+    // 問題タイトル・ドメインを questionSegments に注入
+    if (Array.isArray(data.questionSegments)) {
+      data.questionSegments = data.questionSegments.map(s => ({
+        ...s,
+        title:  QUESTIONS[s.q]?.title  ?? null,
+        domain: QUESTIONS[s.q]?.domain ?? null
+      }));
+    }
     return {
       ...data,
       result: state.result,

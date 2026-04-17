@@ -53,6 +53,36 @@ function summarize(doc) {
     console.log(`  total score : ${doc.result.total} / 27`);
     console.log(`  severity    : ${doc.result.severity}`);
   }
+
+  const segs = doc.questionSegments || [];
+  if (segs.length) {
+    console.log('\n--- per-question timing ---');
+    for (const s of segs) {
+      const enter0 = s.enterTimes[0];
+      const hesitation = (s.firstAnswerTime !== null && enter0 !== undefined)
+        ? (s.firstAnswerTime - enter0) / 1000
+        : null;
+      const h = hesitation !== null ? `  hesitation=${hesitation.toFixed(1).padStart(4)}s` : '';
+      console.log(
+        `  Q${String(s.questionNumber).padStart(2)} ${(s.title || '').padEnd(10)} ` +
+        `dur=${(s.activeDurationMs/1000).toFixed(1).padStart(5)}s  ` +
+        `visits=${s.enterTimes.length}  changes=${s.answerEventCount}  ` +
+        `answer=${s.finalAnswer}${h}`
+      );
+    }
+  }
+}
+
+/**
+ * 任意の質問（0-indexed）中の検出フレームを抜き出す。
+ */
+export function framesOfQuestion(doc, qIndex) {
+  const seg = (doc.questionSegments || []).find(s => s.q === qIndex);
+  if (!seg) return [];
+  const ranges = seg.activeTimeRanges;
+  return (doc.frames || []).filter(f =>
+    f.pts && ranges.some(([a, b]) => f.t >= a && f.t < b)
+  );
 }
 
 /**

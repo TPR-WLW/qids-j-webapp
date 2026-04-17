@@ -136,12 +136,22 @@ const FaceRecorder = (() => {
 
   function setQuestionIndex(i) {
     currentQuestionIndex = i;
-    // 問題境界をフレーム列にも記録しておくと、後工程で区切りが正確に分かる
-    frames.push({
+    logEvent('question_enter');
+  }
+
+  /**
+   * 任意のイベントを frames 列に記録する。
+   * 例: logEvent('answer_selected', { a: 2 })
+   *     logEvent('question_finalize', { a: 2 })
+   */
+  function logEvent(type, extra) {
+    const rec = {
+      event: type,
       t: +(performance.now() - perfStartMs).toFixed(2),
-      q: i,
-      event: 'question_enter'
-    });
+      q: currentQuestionIndex
+    };
+    if (extra) Object.assign(rec, extra);
+    frames.push(rec);
   }
 
   function getBlob()  { return recordedBlob; }
@@ -162,13 +172,87 @@ const FaceRecorder = (() => {
         ptsFormat: 'array of [x, y, z], each normalized to input frame (x,y in 0..1; z is relative depth)',
         matFormat: '16 floats, 4x4 facial transformation matrix, column-major',
         timeBase: 'performance.now() ms relative to recording start',
+        eventTypes: ['question_enter', 'answer_selected', 'question_finalize'],
         notes: [
-          'frames include optional event markers like {event:"question_enter"} between normal detection frames.',
+          'frames include event markers interleaved with 30fps detection rows.',
+          'questionSegments summarizes per-question timing & activity; use activeTimeRanges to slice frames.',
           'mirrored=true means the visual overlay is flipped; stored pts are in raw (non-mirrored) frame coordinates.'
         ]
       },
+      questionSegments: computeQuestionSegments(),
       frames
     };
+  }
+
+  /**
+   * events を走査し、問題ごとの入退出時刻・活動範囲・回答イベントをまとめる。
+   * frames には event 行と検出行が混在しているが、この関数は event 行のみを使う。
+   */
+  function computeQuestionSegments() {
+    const segs = Object.create(null);  // q -> segment
+    const getSeg = (q) => {
+      if (!segs[q]) {
+        segs[q] = {
+          q,
+          questionNumber: q + 1,
+          enterTimes: [],
+          firstAnswerTime: null,
+          lastAnswerTime: null,
+          finalAnswer: null,
+          finalizeTime: null,
+          answerEventCount: 0,
+          activeTimeRanges: [],
+          activeDurationMs: 0
+        };
+      }
+      return segs[q];
+    };
+
+    let currentQ = null;
+    let currentEnter = null;
+    let lastFrameT = 0;
+
+    for (const f of frames) {
+      if (typeof f.t === 'number' && f.t > lastFrameT) lastFrameT = f.t;
+
+      if (f.event === 'question_enter') {
+        // 前の active range を閉じる
+        if (currentQ !== null && currentEnter !== null) {
+          getSeg(currentQ).activeTimeRanges.push([currentEnter, f.t]);
+        }
+        const s = getSeg(f.q);
+        s.enterTimes.push(f.t);
+        currentQ = f.q;
+        currentEnter = f.t;
+      } else if (f.event === 'answer_selected') {
+        const s = getSeg(f.q);
+        if (s.firstAnswerTime === null) s.firstAnswerTime = f.t;
+        s.lastAnswerTime = f.t;
+        if (typeof f.a === 'number') s.finalAnswer = f.a;
+        s.answerEventCount++;
+      } else if (f.event === 'question_finalize') {
+        const s = getSeg(f.q);
+        s.finalizeTime = f.t;
+        if (typeof f.a === 'number') s.finalAnswer = f.a;
+      }
+    }
+
+    // 最後の open な range を閉じる（最終フレームの時刻で）
+    if (currentQ !== null && currentEnter !== null) {
+      getSeg(currentQ).activeTimeRanges.push([currentEnter, lastFrameT]);
+    }
+
+    // 合計時間を計算
+    const result = [];
+    const keys = Object.keys(segs).map(k => +k).sort((a, b) => a - b);
+    for (const q of keys) {
+      const s = segs[q];
+      s.activeDurationMs = +s.activeTimeRanges
+        .reduce((acc, [a, b]) => acc + Math.max(0, b - a), 0)
+        .toFixed(2);
+      result.push(s);
+    }
+    return result;
   }
 
   function isSupported() {
@@ -392,7 +476,7 @@ const FaceRecorder = (() => {
 
   return {
     init, start, stop,
-    setQuestionIndex,
+    setQuestionIndex, logEvent,
     getBlob, getMime, getLandmarkLog,
     isSupported, showPanel
   };
