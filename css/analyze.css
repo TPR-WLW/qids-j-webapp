@@ -267,6 +267,47 @@
   padding: 0 4px;
 }
 .trace-remove:hover { color: var(--c-danger); }
+
+.subsection { font-size: 14px; color: var(--c-text-soft); margin: 18px 0 4px; }
+
+.blink-track {
+  position: relative;
+  height: 24px;
+  background: #eef4f7;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.blink-tick {
+  position: absolute;
+  top: 2px; bottom: 2px;
+  width: 2px;
+  background: #d64040;
+  border-radius: 1px;
+}
+.blink-track .bt-playhead {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 1px;
+  background: rgba(61, 107, 143, 0.4);
+  pointer-events: none;
+}
+
+.pose-summary {
+  display: grid;
+  grid-template-columns: 80px repeat(3, minmax(120px, 1fr));
+  gap: 6px 14px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  padding: 10px 12px;
+  background: #f7fafc;
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.pose-summary .ps-head { color: var(--c-muted); font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; }
+.pose-summary .ps-row  { color: var(--c-text); font-weight: 600; }
+.pose-summary .ps-cell { color: var(--c-text-soft); }
+.pose-summary .ps-strong { color: var(--c-text); font-weight: 600; }
 .trace canvas {
   width: 100%;
   height: 80px;

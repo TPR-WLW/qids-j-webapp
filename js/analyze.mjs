@@ -29,6 +29,9 @@ const toggleBaseline= $('toggleBaseline');
 const qTimeline     = $('qTimeline');
 const qStatsTable   = $('qStatsTable');
 const blendTraces   = $('blendTraces');
+const traceBaselineDeltaToggle = $('traceBaselineDelta');
+const blinkTimelineTrack = $('blinkTimelineTrack');
+const headposeSummary = $('headposeSummary');
 const heatmapCanvas    = $('heatmapCanvas');
 const heatmapLabels    = $('heatmapLabels');
 const heatmapNormalize = $('heatmapNormalize');
@@ -46,6 +49,7 @@ let playStartWallMs = 0;
 let playStartFrameT = 0;
 let rafHandle = null;
 let speed = 1;
+let cachedBaseline = null;  // { bsName: mean } — computed once per doc
 
 // ---------- File loading ----------
 async function handleFile(file) {
@@ -114,12 +118,16 @@ async function loadDoc(loadedDoc) {
   seekBar.value = 0;
   renderFrame(currentIdx);
 
+  cachedBaseline = computeBaselineBlendshapes();
+
   renderMeta();
   renderQuestionTimeline();
   renderQuestionStats();
   renderBlendshapeTraces();
+  renderBlinkTimeline();
   renderHeatmap();
   setupHeatmapTooltip();
+  renderHeadposeSummary();
   renderHeadposeTraces();
 }
 
@@ -627,6 +635,84 @@ function setupHeatmapTooltip() {
 
 // Normalize toggle rewires
 heatmapNormalize?.addEventListener('change', () => renderHeatmap());
+traceBaselineDeltaToggle?.addEventListener('change', () => renderBlendshapeTraces());
+
+// ---------- Blink timeline track ----------
+function renderBlinkTimeline() {
+  if (!blinkTimelineTrack) return;
+  blinkTimelineTrack.innerHTML = '';
+  const blinks = detectBlinks(detectFrames);
+  const t0 = detectFrames[0].t;
+  const tEnd = detectFrames[detectFrames.length-1].t;
+  const dur = tEnd - t0;
+  if (!blinks.length) {
+    blinkTimelineTrack.innerHTML = '<div class="muted tiny" style="padding:4px 8px">眨眼イベントは検出されませんでした。</div>';
+    return;
+  }
+  for (const b of blinks) {
+    const el = document.createElement('div');
+    el.className = 'blink-tick';
+    el.title = `blink @ ${((b.t - t0) / 1000).toFixed(2)}s`;
+    el.style.left = `${((b.t - t0) / dur) * 100}%`;
+    blinkTimelineTrack.appendChild(el);
+  }
+  // Playhead line
+  const ph = document.createElement('div');
+  ph.className = 'bt-playhead';
+  ph.id = 'blinkTrackPlayhead';
+  blinkTimelineTrack.appendChild(ph);
+}
+
+// ---------- Head pose summary ----------
+function renderHeadposeSummary() {
+  if (!headposeSummary) return;
+  const metrics = {};
+  for (const key of ['yaw', 'pitch', 'roll']) {
+    const values = [];
+    const t0 = detectFrames[0].t;
+    let maxAbs = 0, maxAbsT = null;
+    for (const f of detectFrames) {
+      if (!f.mat || f.mat.length < 16) continue;
+      const v = extractPose(f.mat, key);
+      if (!isFinite(v)) continue;
+      values.push(v);
+      if (Math.abs(v) > Math.abs(maxAbs)) { maxAbs = v; maxAbsT = f.t; }
+    }
+    const mean = values.reduce((a, x) => a + x, 0) / values.length || 0;
+    const std = values.length
+      ? Math.sqrt(values.reduce((a, x) => a + (x - mean) ** 2, 0) / values.length)
+      : 0;
+    metrics[key] = {
+      mean, std, maxAbs,
+      tAt: maxAbsT != null ? ((maxAbsT - t0) / 1000).toFixed(1) : '—',
+      qAt: maxAbsT != null ? questionAt(maxAbsT) : '—'
+    };
+  }
+  const labelMap = { yaw: 'Yaw (左右)', pitch: 'Pitch (上下)', roll: 'Roll (傾き)' };
+  headposeSummary.innerHTML = `
+    <div class="ps-head">指標</div>
+    <div class="ps-head">平均</div>
+    <div class="ps-head">標準偏差 σ</div>
+    <div class="ps-head">最大偏転（時刻・Q）</div>
+    ${['yaw', 'pitch', 'roll'].map(k => {
+      const m = metrics[k];
+      return `
+        <div class="ps-row">${labelMap[k]}</div>
+        <div class="ps-cell">${m.mean.toFixed(1)}°</div>
+        <div class="ps-cell ps-strong">±${m.std.toFixed(1)}°</div>
+        <div class="ps-cell">${m.maxAbs.toFixed(0)}° @ ${m.tAt}s（${m.qAt}）</div>
+      `;
+    }).join('')}
+  `;
+}
+
+function questionAt(tAbs) {
+  const segs = doc.questionSegments || [];
+  for (const s of segs) {
+    if (s.activeTimeRanges?.some(([a, b]) => tAbs >= a && tAbs < b)) return `Q${s.questionNumber}`;
+  }
+  return '—';
+}
 
 // ---------- Blendshape traces (L/R averaged) ----------
 const TRACE_DEFS = [
@@ -685,6 +771,21 @@ function drawTrace(canvas, keys, vmin, vmax) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
+  const deltaMode = !!traceBaselineDeltaToggle?.checked;
+  let baselineVal = 0;
+  if (deltaMode && cachedBaseline) {
+    baselineVal = averageBs(cachedBaseline, keys);
+    // Center axis on 0; use symmetric range based on observed peak distance from baseline
+    let maxDev = 0;
+    for (const f of detectFrames) {
+      const v = averageBs(f.bs, keys) - baselineVal;
+      if (Math.abs(v) > maxDev) maxDev = Math.abs(v);
+    }
+    maxDev = Math.max(0.05, maxDev);  // floor
+    vmin = -maxDev;
+    vmax = +maxDev;
+  }
+
   const t0 = detectFrames[0].t;
   const tEnd = detectFrames[detectFrames.length-1].t;
   const dur = tEnd - t0;
@@ -709,6 +810,17 @@ function drawTrace(canvas, keys, vmin, vmax) {
     ctx.fillRect(x1, 0, x2 - x1, h);
   }
 
+  // zero line (delta mode)
+  if (deltaMode) {
+    const yZero = h - ((0 - vmin) / (vmax - vmin)) * (h - 4) - 2;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(61, 107, 143, 0.55)';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, yZero); ctx.lineTo(w, yZero); ctx.stroke();
+    ctx.restore();
+  }
+
   // trace line — per-frame mean of the given keys
   ctx.strokeStyle = '#3d6b8f';
   ctx.lineWidth = 1.5;
@@ -716,7 +828,8 @@ function drawTrace(canvas, keys, vmin, vmax) {
   let first = true;
   for (let i = 0; i < detectFrames.length; i++) {
     const f = detectFrames[i];
-    const v = averageBs(f.bs, keys);
+    let v = averageBs(f.bs, keys);
+    if (deltaMode) v = v - baselineVal;
     const x = ((f.t - t0) / dur) * w;
     const y = h - ((v - vmin) / (vmax - vmin)) * (h - 4) - 2;
     if (first) { ctx.moveTo(x, y); first = false; } else { ctx.lineTo(x, y); }
@@ -828,6 +941,10 @@ function updatePlayheads(t) {
     }
     line.style.left = `${pct}%`;
   }
+
+  // Blink timeline playhead
+  const bph = document.getElementById('blinkTrackPlayhead');
+  if (bph) bph.style.left = `${pct}%`;
 }
 
 // ---------- Playback ----------

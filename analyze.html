@@ -112,9 +112,18 @@
 
     <!-- Key blendshape traces -->
     <article class="card">
-      <h2>主要 Blendshape の時間変化</h2>
-      <p class="muted tiny">縦線は質問遷移 / 横線は現在の再生位置。</p>
+      <header class="heatmap-header">
+        <h2>主要 Blendshape の時間変化</h2>
+        <div class="heatmap-controls">
+          <label class="check"><input type="checkbox" id="traceBaselineDelta"><span>ベースラインとの差分で表示</span></label>
+        </div>
+      </header>
+      <p class="muted tiny">縦線は質問遷移 / 横線は現在の再生位置 / 緑帯はベースライン撮影区間。差分モードでは 0 を基準に表情変化を中央表示します。</p>
       <div class="traces" id="blendTraces"></div>
+
+      <h3 class="subsection">眨眼タイムライン</h3>
+      <p class="muted tiny">赤いマーカー = 眨眼のピーク（avg(L, R) &gt; 0.5 の立ち上がり）</p>
+      <div class="blink-track" id="blinkTimelineTrack" aria-label="blink events timeline"></div>
     </article>
 
     <!-- Full heatmap -->
@@ -136,6 +145,7 @@
     <!-- Head pose -->
     <article class="card">
       <h2>頭部姿勢</h2>
+      <div id="headposeSummary" class="pose-summary"></div>
       <div class="traces" id="headposeTraces"></div>
     </article>
   </section>
