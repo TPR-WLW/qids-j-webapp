@@ -39,6 +39,7 @@
   const resultAdvice   = $('resultAdvice');
   const downloadVideo  = $('downloadVideo');
   const downloadLm     = $('downloadLandmarks');
+  const downloadLmRaw  = $('downloadLandmarksRaw');
   const downloadCsv    = $('downloadAnswers');
   const restartBtn     = $('restartBtn');
 
@@ -48,7 +49,8 @@
     canvas: $('overlayCanvas'),
     status: $('cameraStatus'),
     time:   $('recTime'),
-    panel:  $('cameraPanel')
+    panel:  $('cameraPanel'),
+    pose:   $('poseBadge')
   });
 
   // ---------- Intro screen ----------
@@ -229,11 +231,13 @@
 
     // Downloads
     if (state.useCamera && FaceRecorder.getBlob()) {
-      downloadVideo.disabled = false;
-      downloadLm.disabled    = false;
+      downloadVideo.disabled   = false;
+      downloadLm.disabled      = false;
+      downloadLmRaw.disabled   = false;
     } else {
-      downloadVideo.disabled = true;
-      downloadLm.disabled    = true;
+      downloadVideo.disabled   = true;
+      downloadLm.disabled      = true;
+      downloadLmRaw.disabled   = true;
     }
   }
 
@@ -246,16 +250,52 @@
     downloadBlob(blob, `qids-j_recording_${timestamp()}.${ext}`);
   });
 
-  downloadLm.addEventListener('click', () => {
+  // ---------- Landmark downloads ----------
+  function buildLandmarkOut() {
     const data = FaceRecorder.getLandmarkLog();
-    const out = {
+    return {
       ...data,
       result: state.result,
       answers: state.answers.map((a, i) => ({ q: i + 1, title: QUESTIONS[i].title, score: a }))
     };
-    const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  }
+
+  downloadLm.addEventListener('click', async () => {
+    const out = buildLandmarkOut();
+    const json = JSON.stringify(out);
+    downloadLm.disabled = true;
+    const prevLabel = downloadLm.textContent;
+    downloadLm.textContent = '圧縮中…';
+    try {
+      const blob = await gzipJson(json);
+      downloadBlob(blob, `qids-j_landmarks_${timestamp()}.json.gz`);
+    } catch (e) {
+      console.warn('gzip failed, falling back to raw json', e);
+      const blob = new Blob([json], { type: 'application/json' });
+      downloadBlob(blob, `qids-j_landmarks_${timestamp()}.json`);
+      alert('お使いのブラウザは gzip 圧縮に未対応のため、非圧縮 JSON を保存しました。');
+    } finally {
+      downloadLm.disabled = false;
+      downloadLm.textContent = prevLabel;
+    }
+  });
+
+  downloadLmRaw.addEventListener('click', () => {
+    const out = buildLandmarkOut();
+    const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
     downloadBlob(blob, `qids-j_landmarks_${timestamp()}.json`);
   });
+
+  // CompressionStream('gzip') は Chrome 80+, Edge 80+, Firefox 113+, Safari 16.4+
+  async function gzipJson(jsonStr) {
+    if (typeof CompressionStream === 'undefined') {
+      throw new Error('CompressionStream not supported');
+    }
+    const enc = new TextEncoder().encode(jsonStr);
+    const cs = new CompressionStream('gzip');
+    const stream = new Blob([enc]).stream().pipeThrough(cs);
+    return await new Response(stream).blob();
+  }
 
   downloadCsv.addEventListener('click', () => {
     const rows = [['No', '項目', 'スコア(0-3)', '領域']];

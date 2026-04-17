@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#5b8fb9">
   <title>QIDS-J | 抑うつ症状チェック</title>
   <link rel="stylesheet" href="css/style.css">
-  <!-- face-api.js (vladmandic fork — maintained, better compatibility) -->
-  <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.js"></script>
+  <!-- MediaPipe FaceLandmarker は recorder.js 内で dynamic import() するため、
+       ここでは静的に読み込まない。 -->
 </head>
 <body>
   <!-- カメラプレビュー（常時表示／録画中） -->
@@ -19,6 +19,7 @@
         <span class="rec-dot"></span>
         <span id="recTime">00:00</span>
       </div>
+      <div class="pose-badge" id="poseBadge" title="頭部姿勢：ヨー/ピッチ/ロール"></div>
     </div>
     <div class="camera-status" id="cameraStatus">カメラ準備中…</div>
   </div>
@@ -125,10 +126,12 @@
 
         <h3>記録データのダウンロード</h3>
         <div class="btn-row btn-row-wrap">
-          <button id="downloadVideo" class="btn btn-outline" disabled>🎥 映像を保存</button>
-          <button id="downloadLandmarks" class="btn btn-outline" disabled>📊 特徴点データ(JSON)</button>
+          <button id="downloadVideo" class="btn btn-outline" disabled>🎥 映像（webm）</button>
+          <button id="downloadLandmarks" class="btn btn-outline" disabled>📊 特徴点データ（json.gz 圧縮）</button>
+          <button id="downloadLandmarksRaw" class="btn btn-outline" disabled>📄 特徴点データ（非圧縮 json）</button>
           <button id="downloadAnswers" class="btn btn-outline">📝 回答CSV</button>
         </div>
+        <p class="tiny muted">※ 特徴点 JSON には 478 点×3D 座標、52 blendshape、頭部変換行列が 30fps で含まれます。圧縮版（.json.gz）を推奨。展開例は <a href="utils/" target="_blank" rel="noopener">utils/</a> 配下を参照。</p>
 
         <div class="btn-row">
           <button id="restartBtn" class="btn btn-primary">もう一度チェックする</button>

@@ -1,36 +1,64 @@
 /**
- * recorder.js
- * カメラ起動・録画 (MediaRecorder) と
- * face-api.js による 68点ランドマーク検出を担当。
+ * recorder.js  (MediaPipe FaceLandmarker 版)
  *
- * ブラウザ内で完結する設計 — 映像も特徴点データも外部へ送信しない。
+ * - カメラ映像を MediaRecorder で webm 保存
+ * - MediaPipe FaceLandmarker で 478 点 3D ランドマーク + 52 blendshape
+ *   + 4×4 頭部変換行列 を 30 fps で記録
+ * - 時間基準は performance.now()（単調増加）
+ * - 取得データはブラウザ内だけで保持し、download 時のみ gzip 圧縮して書き出す
+ *
+ * 外部 CDN:
+ *  - ESM: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs
+ *  - WASM: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm
+ *  - Model: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
  */
 
 const FaceRecorder = (() => {
-  // ---- state ----
-  let videoEl, canvasEl, statusEl, timeEl, panelEl;
+  // ---- DOM ----
+  let videoEl, canvasEl, statusEl, timeEl, panelEl, poseEl;
+
+  // ---- Media ----
   let stream = null;
   let mediaRecorder = null;
   let chunks = [];
   let recordedBlob = null;
   let recordedMime = 'video/webm';
 
-  let startedAt = null;
+  // ---- Timing ----
+  let sessionStartIso = null;   // 人間可読な開始日時
+  let perfStartMs = 0;          // performance.now() のゼロ点
   let timerId = null;
   let detectionTimerId = null;
   let detectionRunning = false;
   let stopRequested = false;
 
+  // ---- MediaPipe ----
+  let vision = null;            // dynamic import の結果
+  let FaceLandmarkerCls = null; // class
+  let DrawingUtilsCls = null;
+  let faceLandmarker = null;
   let modelsLoaded = false;
-  const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model/';
-  const DETECT_INTERVAL_MS = 120;   // 約 8 fps — 録画の滑らかさには影響しない
-  const DETECTOR_INPUT_SIZE = 160;  // 小さいほうが CPU 負荷が軽く UI が固まらない
 
-  // 特徴点ログ: { t: ms, q: 現在の質問index, landmarks: [[x,y], ...], expression?: {...} }
-  const landmarkLog = [];
+  const MODULE_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+  const WASM_BASE  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+  const MODEL_URL  = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+
+  // ---- Detection config ----
+  const TARGET_FPS = 30;
+  const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
+  const POINT_PRECISION = 4;   // toFixed digits for landmarks
+  const SCORE_PRECISION = 4;   // toFixed digits for blendshape scores
+  const MATRIX_PRECISION = 5;  // toFixed digits for transformation matrix
+
+  // ---- Data ----
+  const frames = [];            // push-only log
   let currentQuestionIndex = 0;
+  let lastFaceSeenAt = -Infinity;
+  let faceLostNoticeShown = false;
 
-  // ---------------- Public API ----------------
+  // ============================================================
+  //                     Public API
+  // ============================================================
 
   async function init(ui) {
     videoEl  = ui.video;
@@ -38,12 +66,9 @@ const FaceRecorder = (() => {
     statusEl = ui.status;
     timeEl   = ui.time;
     panelEl  = ui.panel;
+    poseEl   = ui.pose;
   }
 
-  /**
-   * カメラ起動＋モデル読み込み＋録画開始
-   * @returns {Promise<boolean>} 成功したか
-   */
   async function start() {
     try {
       showPanel(true);
@@ -55,43 +80,33 @@ const FaceRecorder = (() => {
       videoEl.srcObject = stream;
       await videoEl.play();
 
-      // Canvas サイズ合わせ
       syncCanvasSize();
       window.addEventListener('resize', syncCanvasSize);
 
-      // MediaRecorder
       recordedMime = pickMime();
       mediaRecorder = new MediaRecorder(stream, { mimeType: recordedMime });
       chunks = [];
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunks.push(e.data);
-      };
-      mediaRecorder.onstop = () => {
-        recordedBlob = new Blob(chunks, { type: recordedMime });
-      };
-      mediaRecorder.start(1000); // 1秒ごとに chunk 生成
-      startedAt = Date.now();
+      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      mediaRecorder.onstop = () => { recordedBlob = new Blob(chunks, { type: recordedMime }); };
+      mediaRecorder.start(1000);
+
+      sessionStartIso = new Date().toISOString();
+      perfStartMs = performance.now();
       startTimer();
 
-      // モデル読み込み（録画は既に開始している — 解析だけ後追い）
       setStatus('解析モデル読み込み中…');
       await loadModels();
 
-      // WebGL シェーダーのコンパイルを先に済ませる（ウォームアップ）。
-      // これをしないと、最初の検出フレームで 300〜800ms のブロッキングが発生し
-      // 画面遷移直後に UI が固まって見える。
       setStatus('初期化中…');
       await warmup();
       setStatus('録画中・解析中');
 
-      // 解析ループ（requestAnimationFrame ではなく setTimeout で節流し、
-      // クリックなど UI イベントが詰まらないようにする）
       stopRequested = false;
       scheduleDetect();
       return true;
     } catch (err) {
       console.error('[FaceRecorder] start error', err);
-      setStatus('カメラ利用不可: ' + (err.message || err.name));
+      setStatus('カメラ利用不可: ' + (err.message || err.name || 'error'));
       await stop();
       return false;
     }
@@ -101,6 +116,7 @@ const FaceRecorder = (() => {
     stopTimer();
     stopRequested = true;
     if (detectionTimerId) { clearTimeout(detectionTimerId); detectionTimerId = null; }
+
     try {
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         await new Promise((resolve) => {
@@ -118,22 +134,40 @@ const FaceRecorder = (() => {
     setStatus('記録停止');
   }
 
-  function setQuestionIndex(i) { currentQuestionIndex = i; }
+  function setQuestionIndex(i) {
+    currentQuestionIndex = i;
+    // 問題境界をフレーム列にも記録しておくと、後工程で区切りが正確に分かる
+    frames.push({
+      t: +(performance.now() - perfStartMs).toFixed(2),
+      q: i,
+      event: 'question_enter'
+    });
+  }
 
-  function getBlob() { return recordedBlob; }
-  function getMime() { return recordedMime; }
+  function getBlob()  { return recordedBlob; }
+  function getMime()  { return recordedMime; }
+
   function getLandmarkLog() {
     return {
       meta: {
-        startedAt: startedAt ? new Date(startedAt).toISOString() : null,
+        sessionStart: sessionStartIso,
         videoWidth: videoEl ? videoEl.videoWidth : 0,
         videoHeight: videoEl ? videoEl.videoHeight : 0,
+        runtime: '@mediapipe/tasks-vision@0.10.14',
         modelUrl: MODEL_URL,
-        points: 68,
+        targetFps: TARGET_FPS,
         mirrored: true,
-        note: 'landmarks are normalized 0-1 within video frame (x,y). q = question index (0-15), t = ms since start.'
+        pointCount: 478,
+        blendshapeCount: 52,
+        ptsFormat: 'array of [x, y, z], each normalized to input frame (x,y in 0..1; z is relative depth)',
+        matFormat: '16 floats, 4x4 facial transformation matrix, column-major',
+        timeBase: 'performance.now() ms relative to recording start',
+        notes: [
+          'frames include optional event markers like {event:"question_enter"} between normal detection frames.',
+          'mirrored=true means the visual overlay is flipped; stored pts are in raw (non-mirrored) frame coordinates.'
+        ]
       },
-      frames: landmarkLog
+      frames
     };
   }
 
@@ -147,7 +181,9 @@ const FaceRecorder = (() => {
     panelEl.setAttribute('aria-hidden', show ? 'false' : 'true');
   }
 
-  // ---------------- Internal ----------------
+  // ============================================================
+  //                     Internal
+  // ============================================================
 
   function pickMime() {
     const candidates = [
@@ -167,162 +203,191 @@ const FaceRecorder = (() => {
   function syncCanvasSize() {
     if (!videoEl || !canvasEl) return;
     const rect = videoEl.getBoundingClientRect();
-    canvasEl.width = rect.width * devicePixelRatio;
-    canvasEl.height = rect.height * devicePixelRatio;
-    canvasEl.style.width = rect.width + 'px';
+    if (!rect.width || !rect.height) return;
+    canvasEl.width  = Math.floor(rect.width  * devicePixelRatio);
+    canvasEl.height = Math.floor(rect.height * devicePixelRatio);
+    canvasEl.style.width  = rect.width + 'px';
     canvasEl.style.height = rect.height + 'px';
   }
 
   function startTimer() {
     stopTimer();
     timerId = setInterval(() => {
-      if (!startedAt || !timeEl) return;
-      const s = Math.floor((Date.now() - startedAt) / 1000);
+      if (!perfStartMs || !timeEl) return;
+      const s = Math.floor((performance.now() - perfStartMs) / 1000);
       const mm = String(Math.floor(s / 60)).padStart(2, '0');
       const ss = String(s % 60).padStart(2, '0');
       timeEl.textContent = `${mm}:${ss}`;
     }, 500);
   }
-  function stopTimer() {
-    if (timerId) { clearInterval(timerId); timerId = null; }
-  }
+  function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
 
   async function loadModels() {
     if (modelsLoaded) return;
-    if (typeof faceapi === 'undefined') {
-      throw new Error('face-api.js が読み込まれていません');
-    }
-    await Promise.all([
-      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL)
-    ]);
+    // Dynamic import keeps this file as a classic script (no <script type="module"> required).
+    vision = await import(MODULE_URL);
+    FaceLandmarkerCls = vision.FaceLandmarker;
+    DrawingUtilsCls   = vision.DrawingUtils;
+    const filesetResolver = await vision.FilesetResolver.forVisionTasks(WASM_BASE);
+
+    faceLandmarker = await FaceLandmarkerCls.createFromOptions(filesetResolver, {
+      baseOptions: {
+        modelAssetPath: MODEL_URL,
+        delegate: 'GPU'
+      },
+      runningMode: 'VIDEO',
+      numFaces: 1,
+      outputFaceBlendshapes: true,
+      outputFacialTransformationMatrixes: true
+    });
+
     modelsLoaded = true;
   }
 
-  // ダミー画像で一度推論を走らせ、WebGL シェーダーを事前コンパイルさせる。
-  // これを行わないと、問卷画面に遷移した直後の最初の検出で
-  // 数百 ms のブロッキングが発生し、クリックが一瞬固まる原因になる。
+  // ダミー推論で GPU パイプラインを事前に温めておく
   async function warmup() {
     try {
       const dummy = document.createElement('canvas');
-      dummy.width = DETECTOR_INPUT_SIZE;
-      dummy.height = DETECTOR_INPUT_SIZE;
+      dummy.width = 320; dummy.height = 240;
       const c = dummy.getContext('2d');
-      // 適当なグラデを描いておく（真っ黒より shader を通りやすい）
       const g = c.createLinearGradient(0, 0, dummy.width, dummy.height);
       g.addColorStop(0, '#888'); g.addColorStop(1, '#333');
       c.fillStyle = g;
       c.fillRect(0, 0, dummy.width, dummy.height);
-
-      await faceapi
-        .detectSingleFace(dummy, new faceapi.TinyFaceDetectorOptions({
-          inputSize: DETECTOR_INPUT_SIZE,
-          scoreThreshold: 0.5
-        }))
-        .withFaceLandmarks(true);
+      // detectForVideo はタイムスタンプが単調増加していれば OK
+      faceLandmarker.detectForVideo(dummy, 0);
     } catch (e) {
-      // ウォームアップ失敗は致命ではない — 本番ループが普通に動けば OK
+      // 失敗しても致命的ではない
     }
   }
 
   function scheduleDetect() {
     if (stopRequested) return;
-    detectionTimerId = setTimeout(runDetect, DETECT_INTERVAL_MS);
+    detectionTimerId = setTimeout(runDetect, FRAME_INTERVAL_MS);
   }
 
-  async function runDetect() {
+  function runDetect() {
     if (stopRequested) return;
-    // 再入防止 — 前回の検出が終わっていないうちは次を回さない
     if (detectionRunning) { scheduleDetect(); return; }
     if (!modelsLoaded || !videoEl || videoEl.readyState < 2) { scheduleDetect(); return; }
 
     detectionRunning = true;
+    const t = performance.now();
+    const tRel = t - perfStartMs;
+
     try {
-      // 重い推論はアイドル時間があれば使う — クリック応答を優先
-      await idle();
+      const result = faceLandmarker.detectForVideo(videoEl, t);
+      drawOverlay(result);
 
-      const detection = await faceapi
-        .detectSingleFace(videoEl, new faceapi.TinyFaceDetectorOptions({
-          inputSize: DETECTOR_INPUT_SIZE,
-          scoreThreshold: 0.5
-        }))
-        .withFaceLandmarks(true);
+      if (result && result.faceLandmarks && result.faceLandmarks.length > 0) {
+        lastFaceSeenAt = t;
+        if (faceLostNoticeShown) {
+          faceLostNoticeShown = false;
+          setStatus('録画中・解析中');
+        }
 
-      drawOverlay(detection);
+        const lmks = result.faceLandmarks[0]; // NormalizedLandmark[]
+        const pts = new Array(lmks.length);
+        for (let i = 0; i < lmks.length; i++) {
+          pts[i] = [
+            +lmks[i].x.toFixed(POINT_PRECISION),
+            +lmks[i].y.toFixed(POINT_PRECISION),
+            +lmks[i].z.toFixed(POINT_PRECISION)
+          ];
+        }
 
-      if (detection && detection.landmarks) {
-        const vw = videoEl.videoWidth || 1;
-        const vh = videoEl.videoHeight || 1;
-        const pts = detection.landmarks.positions.map(p => [
-          +(p.x / vw).toFixed(4),
-          +(p.y / vh).toFixed(4)
-        ]);
-        landmarkLog.push({
-          t: Date.now() - startedAt,
+        const bs = {};
+        if (result.faceBlendshapes && result.faceBlendshapes[0]) {
+          for (const cat of result.faceBlendshapes[0].categories) {
+            bs[cat.categoryName] = +cat.score.toFixed(SCORE_PRECISION);
+          }
+        }
+
+        let mat = null;
+        if (result.facialTransformationMatrixes && result.facialTransformationMatrixes[0]) {
+          const raw = result.facialTransformationMatrixes[0].data;
+          mat = new Array(raw.length);
+          for (let i = 0; i < raw.length; i++) mat[i] = +raw[i].toFixed(MATRIX_PRECISION);
+        }
+
+        frames.push({
+          t: +tRel.toFixed(2),
           q: currentQuestionIndex,
-          pts
+          pts, bs, mat
         });
+
+        updatePoseReadout(mat);
+      } else {
+        // 顔が検出されていない
+        if (!faceLostNoticeShown && (t - lastFaceSeenAt) > 1500) {
+          setStatus('顔を枠内に…');
+          faceLostNoticeShown = true;
+          if (poseEl) poseEl.textContent = '';
+        }
       }
     } catch (e) {
-      // silently skip this frame
+      console.warn('[FaceRecorder] detect error', e);
     } finally {
       detectionRunning = false;
       scheduleDetect();
     }
   }
 
-  // requestIdleCallback があれば使い、無ければ短い setTimeout で代用
-  function idle() {
-    return new Promise((resolve) => {
-      if (typeof requestIdleCallback === 'function') {
-        requestIdleCallback(() => resolve(), { timeout: 80 });
-      } else {
-        setTimeout(resolve, 0);
-      }
-    });
-  }
-
-  function drawOverlay(detection) {
+  // ------------------------------------------------------------
+  // Overlay drawing
+  //   - canvas は CSS 側で水平反転されているので、ctx 側の反転は不要
+  //   - MediaPipe DrawingUtils.drawConnectors は、正規化座標 × canvas サイズ
+  //     で描画してくれる
+  // ------------------------------------------------------------
+  function drawOverlay(result) {
     if (!canvasEl) return;
     const ctx = canvasEl.getContext('2d');
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    if (!detection || !detection.landmarks) return;
+    if (!result || !result.faceLandmarks || result.faceLandmarks.length === 0) return;
+    if (!DrawingUtilsCls || !FaceLandmarkerCls) return;
 
-    const vw = videoEl.videoWidth || 1;
-    const vh = videoEl.videoHeight || 1;
-    const cw = canvasEl.width;
-    const ch = canvasEl.height;
-    const sx = cw / vw;
-    const sy = ch / vh;
+    const du = new DrawingUtilsCls(ctx);
+    const lmks = result.faceLandmarks[0];
 
-    // canvas は CSS で既にミラー表示されているので、context 側の反転は行わない。
-    // face-api はミラーされていない生のフレームから座標を返すため、
-    // そのまま描画すれば CSS ミラーによって正しい位置に重なる。
-    ctx.fillStyle = '#6cb4a0';
-    for (const p of detection.landmarks.positions) {
-      ctx.beginPath();
-      ctx.arc(p.x * sx, p.y * sy, 1.6 * devicePixelRatio, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    const lw = Math.max(1, 1 * devicePixelRatio);
+    const meshColor = 'rgba(108, 180, 160, 0.55)';
+    const lineColor = 'rgba(108, 180, 160, 0.9)';
+    const irisColor = 'rgba(91, 143, 185, 0.95)';
 
-    ctx.strokeStyle = 'rgba(108, 180, 160, 0.55)';
-    ctx.lineWidth = 1 * devicePixelRatio;
-    drawLine(ctx, detection.landmarks.getJawOutline(), sx, sy);
-    drawLine(ctx, detection.landmarks.getLeftEyeBrow(), sx, sy);
-    drawLine(ctx, detection.landmarks.getRightEyeBrow(), sx, sy);
-    drawLine(ctx, detection.landmarks.getNose(), sx, sy);
-    drawLine(ctx, detection.landmarks.getLeftEye(), sx, sy, true);
-    drawLine(ctx, detection.landmarks.getRightEye(), sx, sy, true);
-    drawLine(ctx, detection.landmarks.getMouth(), sx, sy, true);
+    // Light tesselation for the face mesh (opacity low)
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_TESSELATION,
+      { color: meshColor, lineWidth: lw * 0.5 });
+
+    // Key landmark groups
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_FACE_OVAL,      { color: lineColor, lineWidth: lw });
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_LIPS,           { color: lineColor, lineWidth: lw });
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_LEFT_EYE,       { color: lineColor, lineWidth: lw });
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_RIGHT_EYE,      { color: lineColor, lineWidth: lw });
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_LEFT_EYEBROW,   { color: lineColor, lineWidth: lw });
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_RIGHT_EYEBROW,  { color: lineColor, lineWidth: lw });
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_LEFT_IRIS,      { color: irisColor, lineWidth: lw });
+    du.drawConnectors(lmks, FaceLandmarkerCls.FACE_LANDMARKS_RIGHT_IRIS,     { color: irisColor, lineWidth: lw });
   }
 
-  function drawLine(ctx, pts, sx, sy, closed) {
-    if (!pts || !pts.length) return;
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x * sx, pts[0].y * sy);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * sx, pts[i].y * sy);
-    if (closed) ctx.closePath();
-    ctx.stroke();
+  // 4x4 column-major → approximate yaw/pitch/roll (deg)
+  function updatePoseReadout(mat) {
+    if (!poseEl || !mat) return;
+    // m[col*4+row]
+    // Rotation part:
+    //   r00 = m[0], r10 = m[1], r20 = m[2]
+    //   r01 = m[4], r11 = m[5], r21 = m[6]
+    //   r02 = m[8], r12 = m[9], r22 = m[10]
+    const r00 = mat[0],  r10 = mat[1],  r20 = mat[2];
+    const r01 = mat[4],  r11 = mat[5],  r21 = mat[6];
+    const r02 = mat[8],  r12 = mat[9],  r22 = mat[10];
+    void r10; void r01;
+
+    const yawRad   = Math.atan2(r02, r22);            // Y rotation
+    const pitchRad = Math.asin(Math.max(-1, Math.min(1, -r12)));  // X rotation
+    const rollRad  = Math.atan2(r20, r11);            // Z rotation (近似)
+
+    const deg = (r) => (r * 180 / Math.PI).toFixed(0);
+    poseEl.textContent = `Y${deg(yawRad)}° P${deg(pitchRad)}° R${deg(rollRad)}°`;
   }
 
   return {
