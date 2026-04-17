@@ -41,7 +41,10 @@ const FaceRecorder = (() => {
 
   const MODULE_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
   const WASM_BASE  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
-  const MODEL_URL  = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+  // 同一オリジンで自ホストした決定論的モデル
+  const MODEL_URL  = 'models/face_landmarker.task';
+  // このハッシュは models/face_landmarker.task を更新するときに書き換える
+  const MODEL_SHA384 = 'sha384-tYQh+yJE8llY+zO4RviZmWaSKs5W9tsB0ix5rjQVpF5/CLTqmwtP7bYtkUi2w65P';
 
   // ---- Detection config ----
   const TARGET_FPS = 30;
@@ -165,6 +168,7 @@ const FaceRecorder = (() => {
         videoHeight: videoEl ? videoEl.videoHeight : 0,
         runtime: '@mediapipe/tasks-vision@0.10.14',
         modelUrl: MODEL_URL,
+        modelSha384: MODEL_SHA384,
         targetFps: TARGET_FPS,
         mirrored: true,
         pointCount: 478,
@@ -314,9 +318,12 @@ const FaceRecorder = (() => {
     DrawingUtilsCls   = vision.DrawingUtils;
     const filesetResolver = await vision.FilesetResolver.forVisionTasks(WASM_BASE);
 
+    // モデルは自ホストし、ロード時に SHA-384 を検証する（サプライチェーン防御）
+    const modelBuffer = await fetchVerified(MODEL_URL, MODEL_SHA384);
+
     faceLandmarker = await FaceLandmarkerCls.createFromOptions(filesetResolver, {
       baseOptions: {
-        modelAssetPath: MODEL_URL,
+        modelAssetBuffer: new Uint8Array(modelBuffer),
         delegate: 'GPU'
       },
       runningMode: 'VIDEO',
@@ -326,6 +333,20 @@ const FaceRecorder = (() => {
     });
 
     modelsLoaded = true;
+  }
+
+  async function fetchVerified(url, expectedHashB64) {
+    const res = await fetch(url, { cache: 'force-cache' });
+    if (!res.ok) throw new Error(`fetch failed: ${url} -> HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (expectedHashB64 && crypto.subtle && crypto.subtle.digest) {
+      const digest = await crypto.subtle.digest('SHA-384', buf);
+      const got = 'sha384-' + btoa(String.fromCharCode(...new Uint8Array(digest)));
+      if (got !== expectedHashB64) {
+        throw new Error(`integrity mismatch for ${url}: expected ${expectedHashB64}, got ${got}`);
+      }
+    }
+    return buf;
   }
 
   // ダミー推論で GPU パイプラインを事前に温めておく
