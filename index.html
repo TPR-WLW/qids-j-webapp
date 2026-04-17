@@ -148,6 +148,28 @@
       </article>
     </section>
 
+    <!-- ========== Extraction progress modal ========== -->
+    <div id="extractModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="extractTitle">
+      <div class="modal-card extract-card">
+        <h2 id="extractTitle">特徴点を抽出中…</h2>
+        <p id="extractPhase" class="muted">準備中</p>
+        <div class="progress-track"><div class="progress-fill-ex" id="extractFill"></div></div>
+        <div class="extract-stats">
+          <span id="extractPct">0%</span>
+          <span id="extractFrames">— / — フレーム</span>
+          <span id="extractEta">残り —</span>
+        </div>
+        <div class="extract-thumb-box">
+          <img id="extractThumb" alt="直近の処理フレーム" hidden>
+          <div id="extractThumbPlaceholder" class="muted tiny">処理中の映像が表示されます</div>
+        </div>
+        <p class="tiny muted">※ 画面を閉じると処理は中止されます。バックグラウンドタブでは処理速度が下がる場合があります。</p>
+        <div class="btn-row">
+          <button id="extractCancel" class="btn btn-ghost">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ========== Crisis modal (自殺リスクに対する即時介入) ========== -->
     <div id="crisisModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="crisisTitle">
       <div class="modal-card">
@@ -237,12 +259,22 @@
         </div>
 
         <h3>特徴点の抽出・分析</h3>
-        <p class="muted tiny" style="margin-bottom:8px">録画を MediaPipe FaceLandmarker に通し、478 点 3D ランドマーク・52 ブレンドシェイプ・頭部姿勢を抽出します。処理時間は GPU 性能に依存（5 分の録画で 4〜15 分）。</p>
+        <p class="muted tiny" style="margin-bottom:8px">録画を MediaPipe FaceLandmarker に通し、478 点 3D ランドマーク・52 ブレンドシェイプ・頭部姿勢を抽出します。処理時間は GPU 性能に依存（5 分の録画で 4〜15 分目安）。</p>
+        <div class="extract-controls">
+          <label class="extract-field">
+            <span>抽出 fps</span>
+            <select id="extractFps" class="select">
+              <option value="10">10 (最速)</option>
+              <option value="20">20</option>
+              <option value="30" selected>30 (標準)</option>
+              <option value="60">60 (高精度・動画が 60fps 以上の場合のみ有効)</option>
+            </select>
+          </label>
+        </div>
         <div class="btn-row btn-row-wrap">
           <button id="openAnalyzerBtn" class="btn btn-primary" disabled title="この記録から特徴点を抽出して分析ビューアーで開きます">
             🔬 特徴点を抽出して分析を開始
           </button>
-          <span class="muted tiny" id="analyzeNote">※ 抽出機能は v2 改修中（Phase 2 で実装）</span>
         </div>
         <p class="tiny muted">※ JSON フォーマット仕様と解析例は <a href="utils/" target="_blank" rel="noopener">utils/</a> 配下を参照してください。</p>
 

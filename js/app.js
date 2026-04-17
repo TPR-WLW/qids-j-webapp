@@ -365,10 +365,9 @@
 
     // Downloads / analyze
     const haveRecording = state.useCamera && FaceRecorder.getBlob();
-    downloadVideo.disabled   = !haveRecording;
-    downloadSession.disabled = !haveRecording;
-    // Phase 2 will re-enable this; for now always disabled as a placeholder.
-    openAnalyzerBtn.disabled = true;
+    downloadVideo.disabled    = !haveRecording;
+    downloadSession.disabled  = !haveRecording;
+    openAnalyzerBtn.disabled  = !haveRecording;
   }
 
   // ---------- Downloads ----------
@@ -405,6 +404,148 @@
     const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
     downloadBlob(blob, `qids-j_session_${timestamp()}.json`);
   });
+
+  // ---------- Offline extraction flow (Phase 2) ----------
+  const extractModal    = $('extractModal');
+  const extractPhase    = $('extractPhase');
+  const extractFill     = $('extractFill');
+  const extractPct      = $('extractPct');
+  const extractFrames   = $('extractFrames');
+  const extractEta      = $('extractEta');
+  const extractThumb    = $('extractThumb');
+  const extractThumbPh  = $('extractThumbPlaceholder');
+  const extractCancel   = $('extractCancel');
+  const extractFpsSel   = $('extractFps');
+  let extractAbort = null;
+
+  const PHASE_LABELS = {
+    'loading-library':    'MediaPipe 読み込み中…',
+    'loading-wasm':       'WASM ランタイム準備中…',
+    'fetching-model':     'モデルダウンロード + SHA-384 検証中…',
+    'creating-detector':  '検出器を初期化中…',
+    'preparing-video':    '録画ファイルを解析中…',
+    'extracting':         'フレーム抽出中…',
+    'finalizing':         '仕上げ中…',
+    'done':               '完了',
+  };
+
+  function showExtractModal() {
+    extractModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    extractFill.style.width = '0%';
+    extractPct.textContent = '0%';
+    extractFrames.textContent = '— / — フレーム';
+    extractEta.textContent = '残り —';
+    extractThumb.hidden = true;
+    extractThumbPh.hidden = false;
+    extractPhase.textContent = PHASE_LABELS['loading-library'];
+  }
+  function hideExtractModal() {
+    extractModal.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  extractCancel?.addEventListener('click', () => {
+    if (extractAbort) extractAbort.abort();
+    hideExtractModal();
+  });
+
+  openAnalyzerBtn?.addEventListener('click', async () => {
+    const videoBlob = FaceRecorder.getBlob();
+    if (!videoBlob) return;
+
+    showExtractModal();
+    extractAbort = new AbortController();
+    const sessionLog = buildSessionOut();
+    const targetFps = parseInt(extractFpsSel?.value || '30', 10);
+
+    try {
+      // lazy import the module (loads MediaPipe on demand)
+      const mod = await import('./extract.mjs?v=' + Date.now());
+      const doc = await mod.extractLandmarks({
+        sessionLog, videoBlob, targetFps,
+        delegate: 'auto',
+        signal: extractAbort.signal,
+        onProgress: (info) => {
+          const label = PHASE_LABELS[info.phase] || info.phase;
+          extractPhase.textContent = label;
+          extractFill.style.width = `${Math.max(0, Math.min(100, info.pct ?? 0)).toFixed(1)}%`;
+          extractPct.textContent  = `${(info.pct ?? 0).toFixed(0)}%`;
+          if (info.framesTotal) {
+            extractFrames.textContent = `${info.framesDone ?? 0} / ${info.framesTotal} フレーム`;
+          }
+          if (info.etaSec != null) {
+            extractEta.textContent = `残り ${formatEta(info.etaSec)}`;
+          }
+          if (info.thumbDataUrl) {
+            extractThumb.src = info.thumbDataUrl;
+            extractThumb.hidden = false;
+            extractThumbPh.hidden = true;
+          }
+        }
+      });
+
+      // Handoff to the analyze page
+      const id = await saveHandoff(doc);
+      hideExtractModal();
+      window.open(`analyze.html?handoff=${encodeURIComponent(id)}`, '_blank', 'noopener');
+    } catch (e) {
+      hideExtractModal();
+      if (e?.name === 'AbortError') {
+        console.info('Extraction cancelled by user');
+      } else {
+        console.error('Extraction failed', e);
+        alert('抽出に失敗しました: ' + (e?.message || String(e)));
+      }
+    } finally {
+      extractAbort = null;
+    }
+  });
+
+  function formatEta(sec) {
+    if (sec < 60) return `${Math.round(sec)}秒`;
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec % 60);
+    return `${m}分${s}秒`;
+  }
+
+  // ---------- IndexedDB handoff (shared with analyze page) ----------
+  const HANDOFF_DB = 'qids-j-handoff';
+  const HANDOFF_STORE = 'handoffs';
+  function openHandoffDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(HANDOFF_DB, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(HANDOFF_STORE)) {
+          db.createObjectStore(HANDOFF_STORE, { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror   = () => reject(req.error);
+    });
+  }
+  async function saveHandoff(data) {
+    const db = await openHandoffDb();
+    const id = 'h_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(HANDOFF_STORE, 'readwrite');
+      const store = tx.objectStore(HANDOFF_STORE);
+      store.put({ id, data, createdAt: Date.now() });
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      store.openCursor().onsuccess = (e) => {
+        const cur = e.target.result;
+        if (cur) {
+          if (cur.value.createdAt < cutoff && cur.value.id !== id) cur.delete();
+          cur.continue();
+        }
+      };
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    return id;
+  }
 
   downloadCsv.addEventListener('click', () => {
     const rows = [['No', '項目', 'スコア(0-3)', '領域']];
