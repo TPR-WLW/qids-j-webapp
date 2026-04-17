@@ -407,6 +407,8 @@
 
   // ---------- Offline extraction flow (Phase 2) ----------
   const extractModal    = $('extractModal');
+  const extractProgress = $('extractProgressBox');
+  const extractDoneBox  = $('extractDoneBox');
   const extractPhase    = $('extractPhase');
   const extractFill     = $('extractFill');
   const extractPct      = $('extractPct');
@@ -415,6 +417,10 @@
   const extractThumb    = $('extractThumb');
   const extractThumbPh  = $('extractThumbPlaceholder');
   const extractCancel   = $('extractCancel');
+  const extractOpenBtn  = $('extractOpenBtn');
+  const extractOpenSameTab = $('extractOpenSameTabBtn');
+  const extractCloseBtn = $('extractCloseBtn');
+  const extractTitle    = $('extractTitle');
   const extractFpsSel   = $('extractFps');
   const extractSmSel    = $('extractSmoothing');
   let extractAbort = null;
@@ -434,6 +440,9 @@
   function showExtractModal() {
     extractModal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
+    extractProgress.hidden = false;
+    extractDoneBox.hidden  = true;
+    extractTitle.textContent = '特徴点を抽出中…';
     extractFill.style.width = '0%';
     extractPct.textContent = '0%';
     extractFrames.textContent = '— / — フレーム';
@@ -441,6 +450,21 @@
     extractThumb.hidden = true;
     extractThumbPh.hidden = false;
     extractPhase.textContent = PHASE_LABELS['loading-library'];
+  }
+  function showExtractDone(handoffId) {
+    extractProgress.hidden = true;
+    extractDoneBox.hidden  = false;
+    extractTitle.textContent = '抽出完了';
+    const url = `analyze.html?handoff=${encodeURIComponent(handoffId)}`;
+    extractOpenBtn.href = url;
+    extractOpenBtn.onclick = () => {
+      // Close the modal after the user's click opens the new tab.
+      setTimeout(() => hideExtractModal(), 50);
+    };
+    extractOpenSameTab.onclick = () => {
+      location.href = url;
+    };
+    extractCloseBtn.onclick = () => hideExtractModal();
   }
   function hideExtractModal() {
     extractModal.classList.add('hidden');
@@ -492,10 +516,14 @@
         }
       });
 
-      // Handoff to the analyze page
+      // Handoff to the analyze page — but don't auto-open a new tab here,
+      // because browsers block window.open() that isn't attached to an
+      // active user gesture (we've been awaiting extract for minutes).
+      // Instead, transform the modal into a "done" state with an explicit
+      // button the user clicks → window.open runs inside that gesture →
+      // no popup blocker.
       const id = await saveHandoff(doc);
-      hideExtractModal();
-      window.open(`analyze.html?handoff=${encodeURIComponent(id)}`, '_blank', 'noopener');
+      showExtractDone(id);
     } catch (e) {
       hideExtractModal();
       if (e?.name === 'AbortError') {

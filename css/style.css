@@ -300,6 +300,13 @@ select.select {
 }
 .extract-thumb-box .muted { color: #5d7a89; padding: 20px; }
 
+.extract-success {
+  color: var(--c-normal);
+  font-weight: 600;
+  font-size: 15px;
+  margin: 10px 0 6px;
+}
+
 .check {
   display: flex;
   gap: 10px;

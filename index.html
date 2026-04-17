@@ -152,20 +152,35 @@
     <div id="extractModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="extractTitle">
       <div class="modal-card extract-card">
         <h2 id="extractTitle">特徴点を抽出中…</h2>
-        <p id="extractPhase" class="muted">準備中</p>
-        <div class="progress-track"><div class="progress-fill-ex" id="extractFill"></div></div>
-        <div class="extract-stats">
-          <span id="extractPct">0%</span>
-          <span id="extractFrames">— / — フレーム</span>
-          <span id="extractEta">残り —</span>
+
+        <!-- progress section (visible during extraction) -->
+        <div id="extractProgressBox">
+          <p id="extractPhase" class="muted">準備中</p>
+          <div class="progress-track"><div class="progress-fill-ex" id="extractFill"></div></div>
+          <div class="extract-stats">
+            <span id="extractPct">0%</span>
+            <span id="extractFrames">— / — フレーム</span>
+            <span id="extractEta">残り —</span>
+          </div>
+          <div class="extract-thumb-box">
+            <img id="extractThumb" alt="直近の処理フレーム" hidden>
+            <div id="extractThumbPlaceholder" class="muted tiny">処理中の映像が表示されます</div>
+          </div>
+          <p class="tiny muted">※ 画面を閉じると処理は中止されます。バックグラウンドタブでは処理速度が下がる場合があります。</p>
+          <div class="btn-row">
+            <button id="extractCancel" class="btn btn-ghost">キャンセル</button>
+          </div>
         </div>
-        <div class="extract-thumb-box">
-          <img id="extractThumb" alt="直近の処理フレーム" hidden>
-          <div id="extractThumbPlaceholder" class="muted tiny">処理中の映像が表示されます</div>
-        </div>
-        <p class="tiny muted">※ 画面を閉じると処理は中止されます。バックグラウンドタブでは処理速度が下がる場合があります。</p>
-        <div class="btn-row">
-          <button id="extractCancel" class="btn btn-ghost">キャンセル</button>
+
+        <!-- done section (shown after successful extraction; user-gesture to open popup) -->
+        <div id="extractDoneBox" hidden>
+          <p class="extract-success">✅ 抽出が完了しました。下のボタンから分析ビューアーを開いてください。</p>
+          <p class="muted tiny">※ ブラウザのポップアップブロックに引っかかるのを防ぐため、<strong>このボタンをクリックして</strong>新しいタブを開いてください。</p>
+          <div class="btn-row">
+            <a id="extractOpenBtn" href="#" target="_blank" rel="noopener" class="btn btn-primary">🔬 分析ビューアーを開く（新タブ）</a>
+            <button id="extractOpenSameTabBtn" class="btn btn-outline">このタブで開く</button>
+            <button id="extractCloseBtn" class="btn btn-ghost">閉じる</button>
+          </div>
         </div>
       </div>
     </div>
