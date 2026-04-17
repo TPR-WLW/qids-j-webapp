@@ -6,6 +6,9 @@
 
 > 出典：[厚生労働省「簡易抑うつ症状尺度（QIDS-J）」](https://www.mhlw.go.jp/bunya/shougaihoken/kokoro/dl/02.pdf)
 
+**Live demo**: https://tpr-wlw.github.io/qids-j-webapp/
+**English README**: [README_EN.md](./README_EN.md)
+
 ---
 
 ## 主な機能

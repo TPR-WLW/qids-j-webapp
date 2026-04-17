@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    name: Verify integrity & syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify face_landmarker.task SHA-384 matches the one pinned in js/recorder.js
+        run: |
+          expected=$(grep -oE 'MODEL_SHA384 = .sha384-[A-Za-z0-9+/=]+' js/recorder.js | sed -E "s/.*sha384-//; s/['\";]//")
+          actual=$(openssl dgst -sha384 -binary models/face_landmarker.task | openssl base64 -A)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Model hash drift!"
+            echo "recorder.js says: $expected"
+            echo "model file  is:   $actual"
+            exit 1
+          fi
+          echo "OK — model SHA-384 matches ($actual)"
+
+      - name: Syntax check all JS files
+        run: |
+          for f in js/*.js utils/*.mjs; do
+            node --check "$f" && echo "OK $f" || { echo "::error::$f has syntax error"; exit 1; }
+          done
+
+      - name: HTML validate (basic, via html-validate)
+        run: |
+          npx --yes html-validate index.html || echo "::warning::HTML validation warnings present"
+
+      - name: Python smoke test for decode.py
+        run: |
+          python3 -c "import ast, sys; ast.parse(open('utils/decode.py').read()); print('decode.py parses OK')"
