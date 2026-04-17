@@ -27,6 +27,7 @@ const togglePoints  = $('togglePoints');
 const toggleFeatures= $('toggleFeatures');
 const toggleBaseline= $('toggleBaseline');
 const qTimeline     = $('qTimeline');
+const qStatsTable   = $('qStatsTable');
 const blendTraces   = $('blendTraces');
 const heatmapCanvas = $('heatmapCanvas');
 const heatmapLabels = $('heatmapLabels');
@@ -113,9 +114,193 @@ async function loadDoc(loadedDoc) {
 
   renderMeta();
   renderQuestionTimeline();
+  renderQuestionStats();
   renderBlendshapeTraces();
   renderHeatmap();
   renderHeadposeTraces();
+}
+
+// ---------- Per-question stats ----------
+// Baseline blendshape values (one scalar per bs name)
+function computeBaselineBlendshapes() {
+  const starts = (doc.frames || []).filter(f => f.event === 'baseline_start');
+  const ends   = (doc.frames || []).filter(f => f.event === 'baseline_end');
+  let sample;
+  if (starts.length && ends.length && ends[0].t > starts[0].t) {
+    const s = starts[0].t, e = ends[0].t;
+    sample = detectFrames.filter(f => f.t >= s && f.t < e);
+  }
+  if (!sample || sample.length === 0) sample = detectFrames.slice(0, 30);
+  const sums = {}; const counts = {};
+  for (const f of sample) {
+    if (!f.bs) continue;
+    for (const [k, v] of Object.entries(f.bs)) {
+      sums[k]   = (sums[k]   || 0) + v;
+      counts[k] = (counts[k] || 0) + 1;
+    }
+  }
+  const mean = {};
+  for (const k of Object.keys(sums)) mean[k] = sums[k] / counts[k];
+  return mean;
+}
+
+// Detect blink events (rising edges of avg blink > 0.5)
+function detectBlinks(frames) {
+  const out = [];
+  let armed = true;  // true means we can fire on next rising above threshold
+  for (const f of frames) {
+    const v = averageBs(f.bs, ['eyeBlinkLeft', 'eyeBlinkRight']);
+    if (v > 0.5 && armed) { out.push({ t: f.t, v }); armed = false; }
+    else if (v < 0.3) { armed = true; }
+  }
+  return out;
+}
+
+function computeQuestionStats() {
+  const baseline = computeBaselineBlendshapes();
+  const allBlinks = detectBlinks(detectFrames);
+  const segs = doc.questionSegments || [];
+  return segs.map(seg => {
+    if (!seg.activeTimeRanges?.length) return null;
+    const qFrames = detectFrames.filter(f => seg.activeTimeRanges.some(([a, b]) => f.t >= a && f.t < b));
+    const qBlinks = allBlinks.filter(b => seg.activeTimeRanges.some(([a, bb]) => b.t >= a && b.t < bb));
+    const dwellSec = seg.activeDurationMs / 1000;
+
+    const peakDelta = (keys) => {
+      let max = 0;
+      for (const f of qFrames) {
+        const v = averageBs(f.bs, keys);
+        if (v > max) max = v;
+      }
+      // subtract baseline mean for the same average
+      let base = 0, n = 0;
+      for (const k of keys) { if (baseline[k] != null) { base += baseline[k]; n++; } }
+      base = n ? base / n : 0;
+      return max - base;
+    };
+
+    // yaw std
+    let yawSum = 0, yawSq = 0, yawN = 0;
+    for (const f of qFrames) {
+      if (!f.mat || f.mat.length < 16) continue;
+      const y = extractPose(f.mat, 'yaw');
+      yawSum += y; yawSq += y * y; yawN++;
+    }
+    const yawMean = yawN ? yawSum / yawN : 0;
+    const yawStd  = yawN ? Math.sqrt(Math.max(0, yawSq / yawN - yawMean * yawMean)) : 0;
+
+    const hesitation = (seg.firstAnswerTime != null && seg.enterTimes[0] != null)
+      ? (seg.firstAnswerTime - seg.enterTimes[0]) / 1000
+      : null;
+
+    return {
+      seg,
+      q: seg.q,
+      qNum: seg.questionNumber,
+      title: seg.title || '',
+      dwellSec,
+      hesitation,
+      answer: seg.finalAnswer,
+      changes: Math.max(0, (seg.answerEventCount || 0) - 1),
+      smilePeak:       peakDelta(['mouthSmileLeft', 'mouthSmileRight']),
+      frownPeak:       peakDelta(['mouthFrownLeft', 'mouthFrownRight']),
+      browInnerUpPeak: peakDelta(['browInnerUp']),
+      blinkRate:       dwellSec > 0 ? (qBlinks.length / dwellSec) * 60 : 0,
+      yawStd
+    };
+  }).filter(Boolean);
+}
+
+function renderQuestionStats() {
+  if (!qStatsTable) return;
+  const rows = computeQuestionStats();
+  if (rows.length === 0) { qStatsTable.innerHTML = ''; return; }
+
+  const cols = [
+    { key: 'qNum',            label: 'Q',             klass: 'col-q',    fmt: (v) => `Q${v}` },
+    { key: 'title',           label: 'タイトル',       klass: 'col-text', fmt: (v) => escapeHtml(v) },
+    { key: 'dwellSec',        label: '滞在 (s)',       klass: 'col-num',  fmt: (v) => v.toFixed(1) },
+    { key: 'hesitation',      label: '迷い (s)',       klass: 'col-num',  fmt: (v) => v == null ? '—' : v.toFixed(1) },
+    { key: 'answer',          label: '答え',           klass: 'col-num',  fmt: (v) => v == null ? '—' : String(v) },
+    { key: 'changes',         label: '変更',           klass: 'col-num',  fmt: (v) => String(v) },
+    { key: 'smilePeak',       label: 'Smile Δpeak',    klass: 'col-num',  fmt: (v) => signed3(v), heat: true, dir: 'up-good' },
+    { key: 'frownPeak',       label: 'Frown Δpeak',    klass: 'col-num',  fmt: (v) => signed3(v), heat: true, dir: 'up-bad' },
+    { key: 'browInnerUpPeak', label: 'BrowInUp Δpeak', klass: 'col-num',  fmt: (v) => signed3(v), heat: true, dir: 'up-bad' },
+    { key: 'blinkRate',       label: 'Blink /分',      klass: 'col-num',  fmt: (v) => v.toFixed(1), heat: true, dir: 'up-bad' },
+    { key: 'yawStd',          label: 'Yaw σ (°)',      klass: 'col-num',  fmt: (v) => v.toFixed(1), heat: true, dir: 'up-bad' },
+  ];
+
+  // Column stats for coloring
+  const colStats = {};
+  for (const c of cols) {
+    if (!c.heat) continue;
+    const vals = rows.map(r => r[c.key]).filter(v => typeof v === 'number' && isFinite(v));
+    const mean = vals.reduce((a, v) => a + v, 0) / vals.length;
+    const std  = Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / vals.length) || 1e-9;
+    colStats[c.key] = { mean, std };
+  }
+
+  let sortKey = null, sortDir = 1;
+  function build() {
+    let sorted = rows.slice();
+    if (sortKey) {
+      sorted.sort((a, b) => {
+        const va = a[sortKey], vb = b[sortKey];
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        if (typeof va === 'number') return (va - vb) * sortDir;
+        return String(va).localeCompare(String(vb)) * sortDir;
+      });
+    }
+    const thead = `<thead><tr>${cols.map(c => {
+      const sortCls = sortKey === c.key ? (sortDir === 1 ? 'sorted-asc' : 'sorted-desc') : '';
+      return `<th class="${c.klass} ${sortCls}" data-key="${c.key}">${escapeHtml(c.label)}</th>`;
+    }).join('')}</tr></thead>`;
+    const tbody = `<tbody>${sorted.map(r => {
+      return `<tr data-t="${r.seg.activeTimeRanges[0][0]}">${cols.map(c => {
+        const v = r[c.key];
+        const content = v == null ? '—' : c.fmt(v);
+        let style = '';
+        if (c.heat && colStats[c.key] && typeof v === 'number' && isFinite(v)) {
+          const { mean, std } = colStats[c.key];
+          const z = (v - mean) / std;
+          style = ` style="${heatmapBg(z, c.dir)}"`;
+        }
+        return `<td class="${c.klass}"${style}>${content}</td>`;
+      }).join('')}</tr>`;
+    }).join('')}</tbody>`;
+    qStatsTable.innerHTML = thead + tbody;
+    qStatsTable.querySelectorAll('thead th').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.dataset.key;
+        if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = 1; }
+        build();
+      });
+    });
+    qStatsTable.querySelectorAll('tbody tr').forEach(tr => {
+      tr.addEventListener('click', () => seekToTime(parseFloat(tr.dataset.t)));
+    });
+  }
+  build();
+}
+
+function signed3(v) {
+  if (v == null || !isFinite(v)) return '—';
+  return (v >= 0 ? '+' : '') + v.toFixed(3);
+}
+
+// Return inline style for a z-score on a column:
+// dir='up-bad'  → positive z tints red (concerning), negative z tints green
+// dir='up-good' → positive z tints green, negative z tints red
+// Magnitude |z| in [0,2.5] maps to opacity 0..0.55
+function heatmapBg(z, dir) {
+  const mag = Math.min(2.5, Math.abs(z)) / 2.5;
+  if (mag < 0.1) return '';
+  const positive = z >= 0;
+  const isRed = (dir === 'up-bad') ? positive : !positive;
+  const alpha = (mag * 0.55).toFixed(2);
+  const color = isRed ? `255,80,80` : `70,170,120`;
+  return `background: rgba(${color}, ${alpha});`;
 }
 
 function computeBaseline() {

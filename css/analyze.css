@@ -262,6 +262,55 @@
   display: block;
 }
 
+/* ------------ Per-question stats table ------------ */
+.qstats-wrap {
+  overflow-x: auto;
+  margin-top: 12px;
+  border: 1px solid var(--c-line);
+  border-radius: 8px;
+}
+.qstats {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.qstats thead th {
+  position: sticky;
+  top: 0;
+  background: #f3f8fa;
+  color: var(--c-text-soft);
+  font-weight: 600;
+  padding: 9px 10px;
+  text-align: right;
+  border-bottom: 1px solid var(--c-line);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.qstats thead th:first-child,
+.qstats thead th.col-text {
+  text-align: left;
+}
+.qstats thead th.sorted-asc::after  { content: ' ▲'; font-size: 9px; color: var(--c-primary); }
+.qstats thead th.sorted-desc::after { content: ' ▼'; font-size: 9px; color: var(--c-primary); }
+.qstats tbody tr {
+  cursor: pointer;
+  transition: background var(--t);
+}
+.qstats tbody tr:hover { background: #f7fafc; }
+.qstats tbody td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--c-line);
+  text-align: right;
+  white-space: nowrap;
+}
+.qstats tbody td:first-child,
+.qstats tbody td.col-text { text-align: left; color: var(--c-text); }
+.qstats tbody td.col-num  { color: var(--c-text); }
+.qstats tbody tr:last-child td { border-bottom: 0; }
+.qstats tbody td.col-q { color: var(--c-text-soft); font-weight: 600; }
+
 /* ------------ Heatmap ------------ */
 .heatmap-wrap {
   display: flex;
