@@ -128,11 +128,13 @@
     q.options.forEach((text, idx) => {
       const li = document.createElement('div');
       li.className = 'option';
-      li.setAttribute('role', 'button');
-      li.setAttribute('tabindex', '0');
+      li.setAttribute('role', 'radio');
+      li.setAttribute('tabindex', state.answers[i] === idx ? '0' : '-1');
+      li.setAttribute('aria-checked', state.answers[i] === idx ? 'true' : 'false');
+      li.setAttribute('aria-label', `${idx} 点: ${text}`);
       if (state.answers[i] === idx) li.classList.add('selected');
       li.innerHTML = `
-        <div class="option-score">${idx}</div>
+        <div class="option-score" aria-hidden="true">${idx}</div>
         <div class="option-text">${escapeHtml(text)}</div>
       `;
       const choose = () => selectAnswer(idx);
@@ -154,7 +156,10 @@
     state.answers[state.current] = idx;
     // UI
     [...optionsList.children].forEach((el, j) => {
-      el.classList.toggle('selected', j === idx);
+      const sel = j === idx;
+      el.classList.toggle('selected', sel);
+      el.setAttribute('aria-checked', sel ? 'true' : 'false');
+      el.setAttribute('tabindex', sel ? '0' : '-1');
     });
     nextBtn.disabled = false;
     if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });

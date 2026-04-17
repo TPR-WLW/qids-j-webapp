@@ -17,15 +17,15 @@
 </head>
 <body>
   <!-- カメラプレビュー（常時表示／録画中） -->
-  <div id="cameraPanel" class="camera-panel hidden" aria-hidden="true">
+  <div id="cameraPanel" class="camera-panel hidden" aria-hidden="true" aria-label="カメラプレビューとランドマーク">
     <div class="camera-wrapper">
-      <video id="cameraVideo" autoplay muted playsinline></video>
-      <canvas id="overlayCanvas"></canvas>
-      <div class="rec-badge" id="recBadge">
-        <span class="rec-dot"></span>
+      <video id="cameraVideo" autoplay muted playsinline aria-label="Web カメラのライブプレビュー"></video>
+      <canvas id="overlayCanvas" role="img" aria-label="顔のランドマークを重ねた描画" aria-hidden="true"></canvas>
+      <div class="rec-badge" id="recBadge" aria-label="録画時間">
+        <span class="rec-dot" aria-hidden="true"></span>
         <span id="recTime">00:00</span>
       </div>
-      <div class="pose-badge" id="poseBadge" title="頭部姿勢：ヨー/ピッチ/ロール"></div>
+      <div class="pose-badge" id="poseBadge" title="頭部姿勢：ヨー（Y, 左右）/ ピッチ（P, 上下）/ ロール（R, 傾き）単位は度" aria-label="頭部姿勢"></div>
     </div>
     <div class="camera-status" id="cameraStatus">カメラ準備中…</div>
   </div>
@@ -112,7 +112,8 @@
           <span class="qnum" id="qNum">Q1</span>
           <h2 id="qTitle">質問タイトル</h2>
         </div>
-        <div class="options" id="optionsList"></div>
+        <p class="keyboard-hint" aria-hidden="true">キーボード: <kbd>0</kbd>–<kbd>3</kbd> で選択、<kbd>Enter</kbd> で次へ、<kbd>←</kbd> で戻る</p>
+        <div class="options" id="optionsList" role="radiogroup" aria-labelledby="qTitle"></div>
 
         <div class="btn-row btn-row-split">
           <button id="prevBtn" class="btn btn-ghost">戻る</button>
@@ -197,9 +198,18 @@
 
         <h3>記録データのダウンロード</h3>
         <div class="btn-row btn-row-wrap">
-          <button id="downloadVideo" class="btn btn-outline" disabled>🎥 映像（webm）</button>
-          <button id="downloadLandmarks" class="btn btn-outline" disabled>📊 特徴点データ（json.gz 圧縮）</button>
-          <button id="downloadLandmarksRaw" class="btn btn-outline" disabled>📄 特徴点データ（非圧縮 json）</button>
+          <button id="downloadVideo" class="btn btn-outline" disabled
+                  title="映像データはカメラを使用した場合のみダウンロードできます">
+            🎥 映像（webm）
+          </button>
+          <button id="downloadLandmarks" class="btn btn-outline" disabled
+                  title="特徴点データはカメラを使用した場合のみダウンロードできます">
+            📊 特徴点データ（json.gz 圧縮）
+          </button>
+          <button id="downloadLandmarksRaw" class="btn btn-outline" disabled
+                  title="特徴点データはカメラを使用した場合のみダウンロードできます">
+            📄 特徴点データ（非圧縮 json）
+          </button>
           <button id="downloadAnswers" class="btn btn-outline">📝 回答CSV</button>
         </div>
         <p class="tiny muted">※ 特徴点 JSON には 478 点×3D 座標、52 blendshape、頭部変換行列が 30fps で含まれます。圧縮版（.json.gz）を推奨。展開例は <a href="utils/" target="_blank" rel="noopener">utils/</a> 配下を参照。</p>
