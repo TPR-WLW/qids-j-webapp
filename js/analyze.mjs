@@ -160,6 +160,8 @@ function hideWebmOptions() {
 webmCancelBtn?.addEventListener('click', hideWebmOptions);
 webmStartBtn?.addEventListener('click', async () => {
   if (!pendingWebmBlob) return;
+  if (abortCtl) return;                 // already extracting
+  webmStartBtn.disabled = true;
   const targetFps = parseInt(analyzeExtractFps?.value || '30', 10);
   const sessionLog = pendingSessionLog || {
     meta: { sessionStart: new Date().toISOString(),
@@ -194,6 +196,7 @@ webmStartBtn?.addEventListener('click', async () => {
     showError('抽出に失敗しました: ' + (e?.message || String(e)));
   } finally {
     abortCtl = null;
+    if (webmStartBtn) webmStartBtn.disabled = false;
   }
 });
 

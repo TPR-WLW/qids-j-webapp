@@ -226,6 +226,16 @@ export async function extractLandmarks(opts) {
 
   onProgress({ phase: 'finalizing', pct: 97 });
 
+  // If not a single frame had a detected face, downstream analyze code
+  // assumes detectFrames[0] exists and will throw. Surface a friendlier
+  // error instead of letting that crash the viewer.
+  if (frames.length === 0) {
+    throw new Error(
+      '顔が 1 フレームも検出されませんでした。録画の内容をご確認ください（カメラが塞がれている、' +
+      '画角内に顔が写っていない、暗すぎる 等）。'
+    );
+  }
+
   // Optional temporal smoothing (EMA)
   let smoothed = false;
   if (smoothing && typeof smoothing.alpha === 'number' && smoothing.alpha > 0 && smoothing.alpha < 1) {
@@ -345,11 +355,16 @@ function throwIfAborted(signal) {
   }
 }
 
-function seekAndWait(video, seconds) {
+function seekAndWait(video, seconds, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const onSeeked = () => { cleanup(); resolve(); };
     const onErr = () => { cleanup(); reject(new Error('seek 失敗')); };
+    const tmr = setTimeout(() => {
+      cleanup();
+      reject(new Error(`seek タイムアウト (${timeoutMs}ms, t=${seconds.toFixed(2)}s)`));
+    }, timeoutMs);
     const cleanup = () => {
+      clearTimeout(tmr);
       video.removeEventListener('seeked', onSeeked);
       video.removeEventListener('error', onErr);
     };

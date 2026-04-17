@@ -455,6 +455,8 @@
   openAnalyzerBtn?.addEventListener('click', async () => {
     const videoBlob = FaceRecorder.getBlob();
     if (!videoBlob) return;
+    if (extractAbort) return;  // extraction already in progress — ignore extra clicks
+    openAnalyzerBtn.disabled = true;
 
     showExtractModal();
     extractAbort = new AbortController();
@@ -504,6 +506,8 @@
       }
     } finally {
       extractAbort = null;
+      // Re-enable only if a recording is still present
+      openAnalyzerBtn.disabled = !(state.useCamera && FaceRecorder.getBlob());
     }
   });
 

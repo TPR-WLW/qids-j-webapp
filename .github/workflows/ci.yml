@@ -18,14 +18,20 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Verify face_landmarker.task SHA-384 matches the one pinned in js/recorder.js
+      - name: Verify face_landmarker.task SHA-384 matches the one pinned in js/extract.mjs
         run: |
-          expected=$(grep -oE 'MODEL_SHA384 = .sha384-[A-Za-z0-9+/=]+' js/recorder.js | sed -E "s/.*sha384-//; s/['\";]//")
+          # MODEL_SHA384 moved from js/recorder.js (v1) to js/extract.mjs (v2)
+          # when the recording/extraction pipeline was split.
+          expected=$(grep -oE 'MODEL_SHA384 = .sha384-[A-Za-z0-9+/=]+' js/extract.mjs | sed -E "s/.*sha384-//; s/['\";]//")
           actual=$(openssl dgst -sha384 -binary models/face_landmarker.task | openssl base64 -A)
+          if [ -z "$expected" ]; then
+            echo "::error::MODEL_SHA384 not found in js/extract.mjs"
+            exit 1
+          fi
           if [ "$expected" != "$actual" ]; then
             echo "::error::Model hash drift!"
-            echo "recorder.js says: $expected"
-            echo "model file  is:   $actual"
+            echo "extract.mjs says: $expected"
+            echo "model file  is:    $actual"
             exit 1
           fi
           echo "OK — model SHA-384 matches ($actual)"
