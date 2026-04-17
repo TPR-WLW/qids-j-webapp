@@ -24,26 +24,17 @@
 
   <title>QIDS-J | 抑うつ症状チェック</title>
   <link rel="stylesheet" href="css/style.css">
-
-  <!-- MediaPipe FaceLandmarker のバンドルを事前取得し、SRI で完全性を検証する。
-       ブラウザが integrity をサポートする場合、改ざんされたバンドルは取得段階で失敗する。 -->
-  <link
-    rel="modulepreload"
-    href="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs"
-    integrity="sha384-pv/a53slpd9r+c7gv5R/Yx+690OjBKfh44t0YEEQi74uhGupAjv0NpiHrzlmhiVn"
-    crossorigin="anonymous">
+  <!-- MediaPipe は v2 では問卷中に読み込まない（分析時に js/extract.mjs が dynamic import する）-->
 </head>
 <body>
-  <!-- カメラプレビュー（常時表示／録画中） -->
-  <div id="cameraPanel" class="camera-panel hidden" aria-hidden="true" aria-label="カメラプレビューとランドマーク">
+  <!-- カメラプレビュー（録画のみ。ランドマーク解析は終了後に行う） -->
+  <div id="cameraPanel" class="camera-panel hidden" aria-hidden="true" aria-label="カメラプレビュー">
     <div class="camera-wrapper">
       <video id="cameraVideo" autoplay muted playsinline aria-label="Web カメラのライブプレビュー"></video>
-      <canvas id="overlayCanvas" role="img" aria-label="顔のランドマークを重ねた描画" aria-hidden="true"></canvas>
       <div class="rec-badge" id="recBadge" aria-label="録画時間">
         <span class="rec-dot" aria-hidden="true"></span>
         <span id="recTime">00:00</span>
       </div>
-      <div class="pose-badge" id="poseBadge" title="頭部姿勢：ヨー（Y, 左右）/ ピッチ（P, 上下）/ ロール（R, 傾き）単位は度" aria-label="頭部姿勢"></div>
     </div>
     <div class="camera-status" id="cameraStatus">カメラ準備中…</div>
   </div>
@@ -71,11 +62,11 @@
 
         <h3>カメラによる記録について（任意）</h3>
         <div class="notice">
-          <p>ご希望の場合のみ、回答中の表情を Web カメラで録画し、顔の 478 点のランドマーク・52 種類のブレンドシェイプ・頭部姿勢を 30fps で記録します。</p>
+          <p>ご希望の場合のみ、回答中の表情を Web カメラで<strong>録画のみ</strong>します。回答中に負荷の高い解析は行わず、終了後に録画を元にランドマーク・ブレンドシェイプ・頭部姿勢を<strong>お好きなタイミングで抽出</strong>できます。</p>
           <ul>
             <li>取得データは <strong>ブラウザ内のみ</strong> で処理され、外部サーバへは一切送信されません。</li>
             <li>データはブラウザのメモリ上にのみ保持され、<strong>ページを閉じる・再読み込みすると消去</strong>されます。必要に応じて終了時にダウンロードしてください。</li>
-            <li>顔の特徴点は <strong>生体認証情報に準ずる機微な情報</strong> です。同意いただけない場合は「カメラを使わずに開始」をお選びください。</li>
+            <li>顔の映像は <strong>生体認証情報に準ずる機微な情報</strong> です。同意いただけない場合は「カメラを使わずに開始」をお選びください。</li>
             <li>カメラを使用しても、いつでも「もう一度チェックする」から中断・再開できます。</li>
           </ul>
         </div>
@@ -117,7 +108,7 @@
     <section id="baselineScreen" class="screen">
       <article class="card baseline-card">
         <h2>表情のベースラインを記録</h2>
-        <p>これから <strong>3 秒間</strong>、自然な状態（力を抜いたニュートラルな表情）の顔を記録します。このベースラインと比較することで、質問回答中の表情変化を正確に解析できます。</p>
+        <p>これから <strong>3 秒間</strong>、自然な状態（力を抜いたニュートラルな表情）を録画します。終了後の解析時に、このベースライン区間と比較して表情の変化量を正確に算出します。</p>
         <div class="baseline-indicator">
           <div class="baseline-ring" id="baselineRing">
             <div class="baseline-countdown" id="baselineCountdown">3</div>
@@ -231,29 +222,29 @@
           <p id="resultAdvice">—</p>
         </div>
 
-        <h3>記録データの分析</h3>
-        <p class="muted tiny" style="margin-bottom:8px">今回の記録をそのまま 3D ビューアーで再生・分析できます（ブラウザ内のみ、外部へは送信されません）。</p>
-        <div class="btn-row btn-row-wrap">
-          <button id="openAnalyzerBtn" class="btn btn-outline">🔬 この記録を分析ビューアーで開く</button>
-        </div>
-
-        <h3>記録データのダウンロード</h3>
+        <h3>録画データ</h3>
+        <p class="muted tiny" style="margin-bottom:8px">録画 (webm) と回答データ (CSV) は今すぐダウンロードできます。表情の特徴点抽出は<strong>お好きなタイミングで</strong>（時間がかかる処理のため、録画中の UI を軽く保つための選択）。</p>
         <div class="btn-row btn-row-wrap">
           <button id="downloadVideo" class="btn btn-outline" disabled
-                  title="映像データはカメラを使用した場合のみダウンロードできます">
-            🎥 映像（webm）
+                  title="映像はカメラを使用した場合のみダウンロードできます">
+            🎥 録画（webm）
           </button>
-          <button id="downloadLandmarks" class="btn btn-outline" disabled
-                  title="特徴点データはカメラを使用した場合のみダウンロードできます">
-            📊 特徴点データ（json.gz 圧縮）
-          </button>
-          <button id="downloadLandmarksRaw" class="btn btn-outline" disabled
-                  title="特徴点データはカメラを使用した場合のみダウンロードできます">
-            📄 特徴点データ（非圧縮 json）
+          <button id="downloadSession" class="btn btn-outline" disabled
+                  title="セッションログはカメラを使用した場合のみダウンロードできます">
+            📄 セッションログ（json）
           </button>
           <button id="downloadAnswers" class="btn btn-outline">📝 回答CSV</button>
         </div>
-        <p class="tiny muted">※ 特徴点 JSON には 478 点×3D 座標、52 blendshape、頭部変換行列が 30fps で含まれます。圧縮版（.json.gz）を推奨。展開例は <a href="utils/" target="_blank" rel="noopener">utils/</a> 配下を参照。</p>
+
+        <h3>特徴点の抽出・分析</h3>
+        <p class="muted tiny" style="margin-bottom:8px">録画を MediaPipe FaceLandmarker に通し、478 点 3D ランドマーク・52 ブレンドシェイプ・頭部姿勢を抽出します。処理時間は GPU 性能に依存（5 分の録画で 4〜15 分）。</p>
+        <div class="btn-row btn-row-wrap">
+          <button id="openAnalyzerBtn" class="btn btn-primary" disabled title="この記録から特徴点を抽出して分析ビューアーで開きます">
+            🔬 特徴点を抽出して分析を開始
+          </button>
+          <span class="muted tiny" id="analyzeNote">※ 抽出機能は v2 改修中（Phase 2 で実装）</span>
+        </div>
+        <p class="tiny muted">※ JSON フォーマット仕様と解析例は <a href="utils/" target="_blank" rel="noopener">utils/</a> 配下を参照してください。</p>
 
         <div class="btn-row">
           <button id="restartBtn" class="btn btn-primary">もう一度チェックする</button>

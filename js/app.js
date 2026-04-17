@@ -81,21 +81,18 @@
   const scoreRing      = $('scoreRing');
   const sevItems       = document.querySelectorAll('.sev-item');
   const resultAdvice   = $('resultAdvice');
-  const downloadVideo   = $('downloadVideo');
-  const downloadLm      = $('downloadLandmarks');
-  const downloadLmRaw   = $('downloadLandmarksRaw');
-  const downloadCsv     = $('downloadAnswers');
-  const openAnalyzerBtn = $('openAnalyzerBtn');
+  const downloadVideo    = $('downloadVideo');
+  const downloadSession  = $('downloadSession');
+  const downloadCsv      = $('downloadAnswers');
+  const openAnalyzerBtn  = $('openAnalyzerBtn');
   const restartBtn     = $('restartBtn');
 
   // ---------- Init ----------
   FaceRecorder.init({
     video:  $('cameraVideo'),
-    canvas: $('overlayCanvas'),
     status: $('cameraStatus'),
     time:   $('recTime'),
-    panel:  $('cameraPanel'),
-    pose:   $('poseBadge')
+    panel:  $('cameraPanel')
   });
 
   // ---------- Intro screen ----------
@@ -367,20 +364,11 @@
     resultAdvice.textContent = advice[result.severityKey];
 
     // Downloads / analyze
-    if (state.useCamera && FaceRecorder.getBlob()) {
-      downloadVideo.disabled    = false;
-      downloadLm.disabled       = false;
-      downloadLmRaw.disabled    = false;
-      openAnalyzerBtn.disabled  = false;
-      openAnalyzerBtn.textContent = '🔬 この記録を分析ビューアーで開く';
-    } else {
-      downloadVideo.disabled   = true;
-      downloadLm.disabled      = true;
-      downloadLmRaw.disabled   = true;
-      // カメラを使わなかった場合は、分析ビューアーは空の状態で開く
-      openAnalyzerBtn.disabled = false;
-      openAnalyzerBtn.textContent = '🔬 分析ビューアーを開く（ファイルを読み込み）';
-    }
+    const haveRecording = state.useCamera && FaceRecorder.getBlob();
+    downloadVideo.disabled   = !haveRecording;
+    downloadSession.disabled = !haveRecording;
+    // Phase 2 will re-enable this; for now always disabled as a placeholder.
+    openAnalyzerBtn.disabled = true;
   }
 
   // ---------- Downloads ----------
@@ -392,78 +380,12 @@
     downloadBlob(blob, `qids-j_recording_${timestamp()}.${ext}`);
   });
 
-  // ---------- Analyze hand-off (IndexedDB) ----------
-  // 録画結果をそのまま /analyze.html に渡すため、IndexedDB に一時保存して
-  // URL パラメータ ?handoff=<id> で引き渡す。
-  // IndexedDB を使う理由: JSON は 10-15MB に達することがあり、URL や
-  // sessionStorage には入らないため。新タブを開いた直後に読み取り→削除される
-  // 一回限りの受け渡し。
-  const HANDOFF_DB = 'qids-j-handoff';
-  const HANDOFF_STORE = 'handoffs';
-
-  function openHandoffDb() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(HANDOFF_DB, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(HANDOFF_STORE)) {
-          db.createObjectStore(HANDOFF_STORE, { keyPath: 'id' });
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror   = () => reject(req.error);
-    });
-  }
-
-  async function saveHandoff(data) {
-    const db = await openHandoffDb();
-    const id = 'h_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(HANDOFF_STORE, 'readwrite');
-      const store = tx.objectStore(HANDOFF_STORE);
-      store.put({ id, data, createdAt: Date.now() });
-      // 1 時間以上前のハンドオフは掃除
-      const cutoff = Date.now() - 60 * 60 * 1000;
-      store.openCursor().onsuccess = (e) => {
-        const cur = e.target.result;
-        if (cur) {
-          if (cur.value.createdAt < cutoff && cur.value.id !== id) cur.delete();
-          cur.continue();
-        }
-      };
-      tx.oncomplete = resolve;
-      tx.onerror    = () => reject(tx.error);
-    });
-    db.close();
-    return id;
-  }
-
-  openAnalyzerBtn?.addEventListener('click', async () => {
-    if (!state.useCamera || !FaceRecorder.getBlob()) {
-      // カメラなし → 空のビューアーを開く
-      window.open('analyze.html', '_blank', 'noopener');
-      return;
-    }
-    const prevLabel = openAnalyzerBtn.textContent;
-    openAnalyzerBtn.disabled = true;
-    openAnalyzerBtn.textContent = '準備中…';
-    try {
-      const out = buildLandmarkOut();
-      const id  = await saveHandoff(out);
-      window.open(`analyze.html?handoff=${encodeURIComponent(id)}`, '_blank', 'noopener');
-    } catch (e) {
-      console.error(e);
-      alert('データの受け渡しに失敗しました。ダウンロード後、分析ビューアーに読み込み直してください。\n\n' + (e?.message || e));
-    } finally {
-      openAnalyzerBtn.disabled = false;
-      openAnalyzerBtn.textContent = prevLabel;
-    }
-  });
-
-  // ---------- Landmark downloads ----------
-  function buildLandmarkOut() {
-    const data = FaceRecorder.getLandmarkLog();
-    // 問題タイトル・ドメインを questionSegments に注入
+  // ---------- Downloads: video + session log ----------
+  // 録画中は MediaPipe を動かさないため、ここでは小さなセッション JSON
+  // （メタ情報 + events + questionSegments + 回答）のみを書き出す。
+  // 特徴点（frames）は Phase 2 で追加される extract.mjs が後から埋める。
+  function buildSessionOut() {
+    const data = FaceRecorder.getSessionLog();
     if (Array.isArray(data.questionSegments)) {
       data.questionSegments = data.questionSegments.map(s => ({
         ...s,
@@ -478,42 +400,11 @@
     };
   }
 
-  downloadLm.addEventListener('click', async () => {
-    const out = buildLandmarkOut();
-    const json = JSON.stringify(out);
-    downloadLm.disabled = true;
-    const prevLabel = downloadLm.textContent;
-    downloadLm.textContent = '圧縮中…';
-    try {
-      const blob = await gzipJson(json);
-      downloadBlob(blob, `qids-j_landmarks_${timestamp()}.json.gz`);
-    } catch (e) {
-      console.warn('gzip failed, falling back to raw json', e);
-      const blob = new Blob([json], { type: 'application/json' });
-      downloadBlob(blob, `qids-j_landmarks_${timestamp()}.json`);
-      alert('お使いのブラウザは gzip 圧縮に未対応のため、非圧縮 JSON を保存しました。');
-    } finally {
-      downloadLm.disabled = false;
-      downloadLm.textContent = prevLabel;
-    }
+  downloadSession?.addEventListener('click', () => {
+    const out = buildSessionOut();
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+    downloadBlob(blob, `qids-j_session_${timestamp()}.json`);
   });
-
-  downloadLmRaw.addEventListener('click', () => {
-    const out = buildLandmarkOut();
-    const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
-    downloadBlob(blob, `qids-j_landmarks_${timestamp()}.json`);
-  });
-
-  // CompressionStream('gzip') は Chrome 80+, Edge 80+, Firefox 113+, Safari 16.4+
-  async function gzipJson(jsonStr) {
-    if (typeof CompressionStream === 'undefined') {
-      throw new Error('CompressionStream not supported');
-    }
-    const enc = new TextEncoder().encode(jsonStr);
-    const cs = new CompressionStream('gzip');
-    const stream = new Blob([enc]).stream().pipeThrough(cs);
-    return await new Response(stream).blob();
-  }
 
   downloadCsv.addEventListener('click', () => {
     const rows = [['No', '項目', 'スコア(0-3)', '領域']];

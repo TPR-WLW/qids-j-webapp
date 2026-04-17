@@ -486,8 +486,7 @@ a:hover { text-decoration: underline; }
   aspect-ratio: 4 / 3;
   background: #000;
 }
-.camera-wrapper video,
-.camera-wrapper canvas {
+.camera-wrapper video {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   object-fit: cover;
@@ -514,20 +513,7 @@ a:hover { text-decoration: underline; }
   0%, 100% { opacity: 1; }
   50% { opacity: .3; }
 }
-.pose-badge {
-  position: absolute;
-  top: 8px; right: 8px;
-  background: rgba(0,0,0,.55);
-  color: #cfe3ef;
-  padding: 4px 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.5px;
-  pointer-events: none;
-  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
-}
-.pose-badge:empty { display: none; }
+/* pose-badge removed — head pose readout happens post-hoc in the analyze view */
 .camera-status {
   padding: 6px 10px;
   font-size: 11px;
