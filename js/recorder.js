@@ -202,7 +202,9 @@ const FaceRecorder = (() => {
         recorderFirstDataOffsetMs: recorderFirstDataMs,  // MediaRecorder の時間基と landmark の時間基のオフセット
         recordedMime,
         eventTypes: ['question_enter', 'answer_selected', 'question_finalize',
-                     'face_lost', 'face_found', 'crisis_modal_shown', 'crisis_modal_closed'],
+                     'face_lost', 'face_found',
+                     'baseline_start', 'baseline_end',
+                     'crisis_modal_shown', 'crisis_modal_closed'],
         device: collectDeviceMeta(),
         notes: [
           'frames include event markers interleaved with 30fps detection rows.',

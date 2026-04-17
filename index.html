@@ -113,6 +113,23 @@
       </article>
     </section>
 
+    <!-- ========== Screen 1.5: ベースライン撮影（中性表情, 3秒） ========== -->
+    <section id="baselineScreen" class="screen">
+      <article class="card baseline-card">
+        <h2>表情のベースラインを記録</h2>
+        <p>これから <strong>3 秒間</strong>、自然な状態（力を抜いたニュートラルな表情）の顔を記録します。このベースラインと比較することで、質問回答中の表情変化を正確に解析できます。</p>
+        <div class="baseline-indicator">
+          <div class="baseline-ring" id="baselineRing">
+            <div class="baseline-countdown" id="baselineCountdown">3</div>
+          </div>
+          <p class="baseline-hint" id="baselineHint">画面を正面から見て、リラックスしてお待ちください。</p>
+        </div>
+        <div class="btn-row">
+          <button id="baselineSkip" class="btn btn-ghost">スキップ</button>
+        </div>
+      </article>
+    </section>
+
     <!-- ========== Screen 2: 問卷 ========== -->
     <section id="quizScreen" class="screen">
       <div class="progress">

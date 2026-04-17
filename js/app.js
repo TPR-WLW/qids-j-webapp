@@ -49,10 +49,15 @@
   // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
   const screens = {
-    intro:  $('introScreen'),
-    quiz:   $('quizScreen'),
-    result: $('resultScreen')
+    intro:    $('introScreen'),
+    baseline: $('baselineScreen'),
+    quiz:     $('quizScreen'),
+    result:   $('resultScreen')
   };
+  const baselineRing      = $('baselineRing');
+  const baselineCountdown = $('baselineCountdown');
+  const baselineHint      = $('baselineHint');
+  const baselineSkip      = $('baselineSkip');
   const consentMedical = $('consentMedical');
   const consentAge     = $('consentAge');
   const consentData    = $('consentData');
@@ -112,6 +117,7 @@
     const ok = await FaceRecorder.start();
     if (ok) {
       state.useCamera = true;
+      await runBaselineCapture();  // 3秒のベースライン撮影を挟む
       goQuiz();
     } else {
       startCamBtn.disabled = false;
@@ -119,6 +125,37 @@
       alert('カメラを起動できませんでした。ブラウザのカメラ許可設定をご確認いただくか、「カメラを使わずに開始」をお選びください。');
     }
   });
+
+  // ---------- Baseline capture ----------
+  async function runBaselineCapture() {
+    switchScreen('baseline');
+    const DURATION_MS = 3000;
+    let skipped = false;
+    const onSkip = () => { skipped = true; };
+    baselineSkip.addEventListener('click', onSkip, { once: true });
+    FaceRecorder.logEvent('baseline_start');
+    const start = performance.now();
+    await new Promise((resolve) => {
+      const tick = () => {
+        if (skipped) { resolve(); return; }
+        const elapsed = performance.now() - start;
+        const remaining = Math.max(0, DURATION_MS - elapsed);
+        const angle = Math.min(360, (elapsed / DURATION_MS) * 360);
+        baselineRing.style.setProperty('--baseline-angle', `${angle}deg`);
+        baselineCountdown.textContent = Math.ceil(remaining / 1000);
+        if (elapsed >= DURATION_MS) {
+          baselineCountdown.textContent = '✓';
+          baselineHint.textContent = '完了 — 質問に進みます。';
+          setTimeout(resolve, 400);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
+    baselineSkip.removeEventListener('click', onSkip);
+    FaceRecorder.logEvent('baseline_end', { skipped, durationMs: +(performance.now() - start).toFixed(2) });
+  }
 
   startNoBtn.addEventListener('click', () => {
     state.useCamera = false;

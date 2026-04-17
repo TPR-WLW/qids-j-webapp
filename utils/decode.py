@@ -95,6 +95,17 @@ def frames_of_question(doc, q_index):
     ]
 
 
+def baseline_frames(doc):
+    """baseline_start から baseline_end までの検出フレームを返す。
+    ベースライン未撮影 / スキップされた場合は空リスト。"""
+    frames = doc.get("frames", [])
+    start = next((f["t"] for f in frames if f.get("event") == "baseline_start"), None)
+    end   = next((f["t"] for f in frames if f.get("event") == "baseline_end"), None)
+    if start is None or end is None or end <= start:
+        return []
+    return [f for f in frames if "pts" in f and start <= f["t"] < end]
+
+
 def to_dataframe(doc: dict):
     """
     detection フレームのみを pandas DataFrame に変換する。
