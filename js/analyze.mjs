@@ -29,8 +29,10 @@ const toggleBaseline= $('toggleBaseline');
 const qTimeline     = $('qTimeline');
 const qStatsTable   = $('qStatsTable');
 const blendTraces   = $('blendTraces');
-const heatmapCanvas = $('heatmapCanvas');
-const heatmapLabels = $('heatmapLabels');
+const heatmapCanvas    = $('heatmapCanvas');
+const heatmapLabels    = $('heatmapLabels');
+const heatmapNormalize = $('heatmapNormalize');
+const heatmapTooltip   = $('heatmapTooltip');
 const headposeTraces= $('headposeTraces');
 
 // ---------- State ----------
@@ -117,6 +119,7 @@ async function loadDoc(loadedDoc) {
   renderQuestionStats();
   renderBlendshapeTraces();
   renderHeatmap();
+  setupHeatmapTooltip();
   renderHeadposeTraces();
 }
 
@@ -432,47 +435,198 @@ function renderQuestionTimeline() {
 }
 
 // ---------- Heatmap ----------
-function renderHeatmap() {
-  const bsKeys = collectBlendshapeKeys();
-  heatmapLabels.innerHTML = bsKeys.map(k => `<span title="${escapeHtml(k)}">${escapeHtml(k)}</span>`).join('');
+const HEATMAP_GROUPS = [
+  { name: 'brow',    label: 'Brow',    match: (k) => /^brow/i.test(k) },
+  { name: 'eye',     label: 'Eye',    match: (k) => /^eye/i.test(k) },
+  { name: 'cheek',   label: 'Cheek',  match: (k) => /^cheek/i.test(k) },
+  { name: 'nose',    label: 'Nose',   match: (k) => /^nose/i.test(k) },
+  { name: 'jaw',     label: 'Jaw',    match: (k) => /^jaw/i.test(k) },
+  { name: 'mouth',   label: 'Mouth',  match: (k) => /^mouth/i.test(k) },
+  { name: 'other',   label: 'Other',  match: () => true },  // catch-all (includes _neutral)
+];
+const HEATMAP_ROW_PX = 10;  // row height in rendered px
+const HEATMAP_GAP_PX = 2;   // gap between groups
 
-  const W = Math.min(1200, detectFrames.length);
-  const H = bsKeys.length;
-  heatmapCanvas.width = W;
-  heatmapCanvas.height = H * 8;   // 8 px tall rows
-
-  const ctx = heatmapCanvas.getContext('2d');
-  const img = ctx.createImageData(W, H);
-  const stride = Math.max(1, detectFrames.length / W);
-  for (let x = 0; x < W; x++) {
-    const fi = Math.min(detectFrames.length - 1, Math.floor(x * stride));
-    const bs = detectFrames[fi].bs || {};
-    for (let y = 0; y < H; y++) {
-      const v = bs[bsKeys[y]] ?? 0;
-      // green→yellow→red gradient
-      let r, g, b;
-      if (v < 0.5) { r = Math.round(46 + v*2 * (224-46)); g = 143 + v*2 * 20; b = 92 - v*2*90; }
-      else          { r = 224; g = Math.round(163 - (v-0.5)*2*130); b = Math.round(20 - (v-0.5)*2*20); }
-      const idx = (y * W + x) * 4;
-      img.data[idx]   = r;
-      img.data[idx+1] = g;
-      img.data[idx+2] = b;
-      img.data[idx+3] = 255;
-    }
-  }
-  // paint row by row with scaling to H*8
-  const tmp = document.createElement('canvas');
-  tmp.width = W; tmp.height = H;
-  tmp.getContext('2d').putImageData(img, 0, 0);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(tmp, 0, 0, W, H * 8);
-}
+/** Ordered rows: [{ key, group, max }, ...] grouped first, desc-sorted by max within group. */
+let heatmapRowOrder = [];
+/** Rows promoted into the focused traces area by clicking their labels */
+let userExtraTraceKeys = [];  // array of single-key strings
 
 function collectBlendshapeKeys() {
   const set = new Set();
   for (const f of detectFrames) if (f.bs) for (const k of Object.keys(f.bs)) set.add(k);
-  return [...set].sort();
+  return [...set];
 }
+
+function computeRowMaxes(keys) {
+  const max = Object.fromEntries(keys.map(k => [k, 0]));
+  for (const f of detectFrames) {
+    if (!f.bs) continue;
+    for (const k of keys) {
+      const v = f.bs[k];
+      if (typeof v === 'number' && v > max[k]) max[k] = v;
+    }
+  }
+  return max;
+}
+
+function buildHeatmapOrder() {
+  const keys = collectBlendshapeKeys();
+  const maxes = computeRowMaxes(keys);
+  const used = new Set();
+  const rows = [];
+  for (const grp of HEATMAP_GROUPS) {
+    const groupKeys = keys.filter(k => !used.has(k) && grp.match(k));
+    groupKeys.forEach(k => used.add(k));
+    groupKeys.sort((a, b) => maxes[b] - maxes[a]);
+    if (groupKeys.length > 0) {
+      rows.push({ type: 'header', group: grp.name, label: grp.label });
+      for (const k of groupKeys) rows.push({ type: 'row', key: k, group: grp.name, max: maxes[k] });
+    }
+  }
+  heatmapRowOrder = rows;
+  return rows;
+}
+
+function renderHeatmap() {
+  const rows = buildHeatmapOrder();
+  const dataRows = rows.filter(r => r.type === 'row');
+  const W = Math.min(1200, Math.max(400, detectFrames.length));
+  const rowPx = HEATMAP_ROW_PX;
+  const gapPx = HEATMAP_GAP_PX;
+
+  // Labels (HTML, aligned with rows)
+  heatmapLabels.innerHTML = rows.map(r => {
+    if (r.type === 'header') return `<div class="hm-group-head">${escapeHtml(r.label)}</div>`;
+    const isActive = userExtraTraceKeys.includes(r.key);
+    const maxStr = r.max != null ? ` <span class="hm-max">${r.max.toFixed(2)}</span>` : '';
+    return `<div class="hm-row ${isActive ? 'active' : ''}" data-key="${escapeHtml(r.key)}" title="${escapeHtml(r.key)}（クリックで主要トレースに追加／解除）">${escapeHtml(r.key)}${maxStr}</div>`;
+  }).join('');
+
+  // Canvas: total height = rows * rowPx + group gaps
+  const groupGaps = rows.filter(r => r.type === 'header').length - 1;  // gaps BETWEEN groups
+  const totalHeight = dataRows.length * rowPx + Math.max(0, groupGaps) * gapPx
+                      + rows.filter(r => r.type === 'header').length * rowPx;
+  heatmapCanvas.width = W;
+  heatmapCanvas.height = totalHeight;
+
+  const ctx = heatmapCanvas.getContext('2d');
+  ctx.fillStyle = '#0d1b24';
+  ctx.fillRect(0, 0, W, totalHeight);
+
+  const normalize = heatmapNormalize?.checked;
+  const stride = Math.max(1, detectFrames.length / W);
+
+  // Walk rows and draw one row at a time (simple; H is small enough)
+  let yCursor = 0;
+  for (const r of rows) {
+    if (r.type === 'header') {
+      // group header — soft band
+      ctx.fillStyle = '#1a3040';
+      ctx.fillRect(0, yCursor, W, rowPx);
+      yCursor += rowPx;
+      continue;
+    }
+    const denom = normalize ? Math.max(1e-6, r.max) : 1;
+    for (let x = 0; x < W; x++) {
+      const fi = Math.min(detectFrames.length - 1, Math.floor(x * stride));
+      const v0 = detectFrames[fi].bs?.[r.key] ?? 0;
+      const v = Math.max(0, Math.min(1, v0 / denom));
+      let red, grn, blu;
+      if (v < 0.5) { red = Math.round(46 + v*2 * (224-46)); grn = 143 + v*2 * 20; blu = 92 - v*2*90; }
+      else          { red = 224; grn = Math.round(163 - (v-0.5)*2*130); blu = Math.round(20 - (v-0.5)*2*20); }
+      ctx.fillStyle = `rgb(${red},${grn},${blu})`;
+      ctx.fillRect(x, yCursor, 1, rowPx);
+    }
+    yCursor += rowPx;
+    // Detect group change; add gap
+    // (done by checking next row; cleaner: just add gap after last row of group)
+  }
+  // Group separator bands — draw over the gaps
+  // Actually we already wrote rows tightly. Instead, re-walk and insert gaps visually:
+  // The simpler approach is: rebuild the rendering with explicit gap between groups.
+  // Since we've already painted tightly, let's re-draw with proper gap handling.
+
+  ctx.clearRect(0, 0, W, totalHeight);
+  ctx.fillStyle = '#0d1b24';
+  ctx.fillRect(0, 0, W, totalHeight);
+  let y = 0;
+  let lastGroup = null;
+  for (const r of rows) {
+    if (r.type === 'header') {
+      if (lastGroup !== null) { y += gapPx; }
+      lastGroup = r.group;
+      ctx.fillStyle = '#1a3040';
+      ctx.fillRect(0, y, W, rowPx);
+      y += rowPx;
+      continue;
+    }
+    const denom = normalize ? Math.max(1e-6, r.max) : 1;
+    for (let x = 0; x < W; x++) {
+      const fi = Math.min(detectFrames.length - 1, Math.floor(x * stride));
+      const v0 = detectFrames[fi].bs?.[r.key] ?? 0;
+      const v = Math.max(0, Math.min(1, v0 / denom));
+      let red, grn, blu;
+      if (v < 0.5) { red = Math.round(46 + v*2 * (224-46)); grn = 143 + v*2 * 20; blu = 92 - v*2*90; }
+      else          { red = 224; grn = Math.round(163 - (v-0.5)*2*130); blu = Math.round(20 - (v-0.5)*2*20); }
+      ctx.fillStyle = `rgb(${red},${grn},${blu})`;
+      ctx.fillRect(x, y, 1, rowPx);
+    }
+    y += rowPx;
+  }
+
+  // (re)wire click on labels
+  heatmapLabels.querySelectorAll('.hm-row').forEach(el => {
+    el.addEventListener('click', () => toggleExtraTrace(el.dataset.key));
+  });
+}
+
+function toggleExtraTrace(key) {
+  const i = userExtraTraceKeys.indexOf(key);
+  if (i >= 0) userExtraTraceKeys.splice(i, 1);
+  else userExtraTraceKeys.push(key);
+  renderBlendshapeTraces();
+  renderHeatmap();  // to refresh "active" label styling
+}
+
+// Tooltip on heatmap canvas
+function setupHeatmapTooltip() {
+  if (!heatmapCanvas || !heatmapTooltip) return;
+  heatmapCanvas.addEventListener('mousemove', (e) => {
+    const rect = heatmapCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const W = heatmapCanvas.width;
+    const scaleX = W / rect.width;
+    const pxY = Math.floor(y * (heatmapCanvas.height / rect.height));
+    const fi = Math.min(detectFrames.length - 1, Math.floor((x * scaleX) / W * detectFrames.length));
+    // walk row order to find which row we're on
+    const rowPx = HEATMAP_ROW_PX, gapPx = HEATMAP_GAP_PX;
+    let yc = 0, lastGroup = null, hitKey = null;
+    for (const r of heatmapRowOrder) {
+      if (r.type === 'header') {
+        if (lastGroup !== null) yc += gapPx;
+        lastGroup = r.group;
+        yc += rowPx; continue;
+      }
+      if (pxY >= yc && pxY < yc + rowPx) { hitKey = r.key; break; }
+      yc += rowPx;
+    }
+    if (!hitKey) { heatmapTooltip.hidden = true; return; }
+    const f = detectFrames[fi];
+    const v = f.bs?.[hitKey] ?? 0;
+    const tSec = ((f.t - detectFrames[0].t) / 1000).toFixed(1);
+    heatmapTooltip.textContent = `${hitKey}: ${v.toFixed(3)} @ ${tSec}s`;
+    heatmapTooltip.hidden = false;
+    const wrapRect = heatmapCanvas.parentElement.getBoundingClientRect();
+    heatmapTooltip.style.left = `${e.clientX - wrapRect.left}px`;
+    heatmapTooltip.style.top  = `${e.clientY - wrapRect.top}px`;
+  });
+  heatmapCanvas.addEventListener('mouseleave', () => { heatmapTooltip.hidden = true; });
+}
+
+// Normalize toggle rewires
+heatmapNormalize?.addEventListener('change', () => renderHeatmap());
 
 // ---------- Blendshape traces (L/R averaged) ----------
 const TRACE_DEFS = [
@@ -497,17 +651,27 @@ function averageBs(bs, keys) {
 
 function renderBlendshapeTraces() {
   blendTraces.innerHTML = '';
-  for (const def of TRACE_DEFS) {
+  const builtins = TRACE_DEFS.map(d => ({ label: d.label, keys: d.keys, removable: false }));
+  const extras   = userExtraTraceKeys.map(k => ({ label: k, keys: [k], removable: true }));
+  const all = [...builtins, ...extras];
+  for (const def of all) {
     const box = document.createElement('div');
     box.className = 'trace';
     box.dataset.bsKeys = def.keys.join(',');
     const lrHint = def.keys.length > 1 ? '<span class="muted tiny" style="margin-left:6px">L/R 平均</span>' : '';
+    const removeBtn = def.removable
+      ? `<button class="trace-remove" data-key="${escapeHtml(def.keys[0])}" aria-label="削除">×</button>`
+      : '';
     box.innerHTML = `
-      <div class="trace-label"><strong>${escapeHtml(def.label)}</strong>${lrHint}<span data-role="val">—</span></div>
+      <div class="trace-label"><strong>${escapeHtml(def.label)}</strong>${lrHint}${removeBtn}<span data-role="val">—</span></div>
       <canvas></canvas>
     `;
     blendTraces.appendChild(box);
     drawTrace(box.querySelector('canvas'), def.keys, 0, 1);
+    box.querySelector('.trace-remove')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExtraTrace(e.currentTarget.dataset.key);
+    });
   }
 }
 

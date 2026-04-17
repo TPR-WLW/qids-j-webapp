@@ -119,12 +119,18 @@
 
     <!-- Full heatmap -->
     <article class="card">
-      <h2>全 52 Blendshape のヒートマップ</h2>
-      <p class="muted tiny">行: 各 blendshape / 列: 時間 / 明るさ: スコア（0–1）</p>
+      <header class="heatmap-header">
+        <h2>全 Blendshape のヒートマップ</h2>
+        <div class="heatmap-controls">
+          <label class="check"><input type="checkbox" id="heatmapNormalize"><span>行別に正規化</span></label>
+        </div>
+      </header>
+      <p class="muted tiny">行: 各 blendshape（活発な順・解剖グループ別）／列: 時間／明るさ: スコア。<strong>行の名前をクリック</strong>するとそのチャンネルを上の「主要トレース」に追加します。</p>
       <div class="heatmap-wrap">
-        <canvas id="heatmapCanvas"></canvas>
         <div class="heatmap-labels" id="heatmapLabels"></div>
+        <canvas id="heatmapCanvas"></canvas>
       </div>
+      <div id="heatmapTooltip" class="heatmap-tooltip" hidden></div>
     </article>
 
     <!-- Head pose -->
