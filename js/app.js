@@ -81,10 +81,11 @@
   const scoreRing      = $('scoreRing');
   const sevItems       = document.querySelectorAll('.sev-item');
   const resultAdvice   = $('resultAdvice');
-  const downloadVideo  = $('downloadVideo');
-  const downloadLm     = $('downloadLandmarks');
-  const downloadLmRaw  = $('downloadLandmarksRaw');
-  const downloadCsv    = $('downloadAnswers');
+  const downloadVideo   = $('downloadVideo');
+  const downloadLm      = $('downloadLandmarks');
+  const downloadLmRaw   = $('downloadLandmarksRaw');
+  const downloadCsv     = $('downloadAnswers');
+  const openAnalyzerBtn = $('openAnalyzerBtn');
   const restartBtn     = $('restartBtn');
 
   // ---------- Init ----------
@@ -365,15 +366,20 @@
     };
     resultAdvice.textContent = advice[result.severityKey];
 
-    // Downloads
+    // Downloads / analyze
     if (state.useCamera && FaceRecorder.getBlob()) {
-      downloadVideo.disabled   = false;
-      downloadLm.disabled      = false;
-      downloadLmRaw.disabled   = false;
+      downloadVideo.disabled    = false;
+      downloadLm.disabled       = false;
+      downloadLmRaw.disabled    = false;
+      openAnalyzerBtn.disabled  = false;
+      openAnalyzerBtn.textContent = '🔬 この記録を分析ビューアーで開く';
     } else {
       downloadVideo.disabled   = true;
       downloadLm.disabled      = true;
       downloadLmRaw.disabled   = true;
+      // カメラを使わなかった場合は、分析ビューアーは空の状態で開く
+      openAnalyzerBtn.disabled = false;
+      openAnalyzerBtn.textContent = '🔬 分析ビューアーを開く（ファイルを読み込み）';
     }
   }
 
@@ -384,6 +390,74 @@
     const mime = FaceRecorder.getMime();
     const ext = mime.includes('mp4') ? 'mp4' : 'webm';
     downloadBlob(blob, `qids-j_recording_${timestamp()}.${ext}`);
+  });
+
+  // ---------- Analyze hand-off (IndexedDB) ----------
+  // 録画結果をそのまま /analyze.html に渡すため、IndexedDB に一時保存して
+  // URL パラメータ ?handoff=<id> で引き渡す。
+  // IndexedDB を使う理由: JSON は 10-15MB に達することがあり、URL や
+  // sessionStorage には入らないため。新タブを開いた直後に読み取り→削除される
+  // 一回限りの受け渡し。
+  const HANDOFF_DB = 'qids-j-handoff';
+  const HANDOFF_STORE = 'handoffs';
+
+  function openHandoffDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(HANDOFF_DB, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(HANDOFF_STORE)) {
+          db.createObjectStore(HANDOFF_STORE, { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror   = () => reject(req.error);
+    });
+  }
+
+  async function saveHandoff(data) {
+    const db = await openHandoffDb();
+    const id = 'h_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(HANDOFF_STORE, 'readwrite');
+      const store = tx.objectStore(HANDOFF_STORE);
+      store.put({ id, data, createdAt: Date.now() });
+      // 1 時間以上前のハンドオフは掃除
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      store.openCursor().onsuccess = (e) => {
+        const cur = e.target.result;
+        if (cur) {
+          if (cur.value.createdAt < cutoff && cur.value.id !== id) cur.delete();
+          cur.continue();
+        }
+      };
+      tx.oncomplete = resolve;
+      tx.onerror    = () => reject(tx.error);
+    });
+    db.close();
+    return id;
+  }
+
+  openAnalyzerBtn?.addEventListener('click', async () => {
+    if (!state.useCamera || !FaceRecorder.getBlob()) {
+      // カメラなし → 空のビューアーを開く
+      window.open('analyze.html', '_blank', 'noopener');
+      return;
+    }
+    const prevLabel = openAnalyzerBtn.textContent;
+    openAnalyzerBtn.disabled = true;
+    openAnalyzerBtn.textContent = '準備中…';
+    try {
+      const out = buildLandmarkOut();
+      const id  = await saveHandoff(out);
+      window.open(`analyze.html?handoff=${encodeURIComponent(id)}`, '_blank', 'noopener');
+    } catch (e) {
+      console.error(e);
+      alert('データの受け渡しに失敗しました。ダウンロード後、分析ビューアーに読み込み直してください。\n\n' + (e?.message || e));
+    } finally {
+      openAnalyzerBtn.disabled = false;
+      openAnalyzerBtn.textContent = prevLabel;
+    }
   });
 
   // ---------- Landmark downloads ----------

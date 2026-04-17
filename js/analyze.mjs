@@ -578,8 +578,61 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// Autoload sample if query string says so
+// ---------- Handoff from main quiz page (via IndexedDB) ----------
+const HANDOFF_DB = 'qids-j-handoff';
+const HANDOFF_STORE = 'handoffs';
+
+function openHandoffDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(HANDOFF_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(HANDOFF_STORE)) {
+        db.createObjectStore(HANDOFF_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+async function consumeHandoff(id) {
+  const db = await openHandoffDb();
+  const data = await new Promise((resolve, reject) => {
+    const tx = db.transaction(HANDOFF_STORE, 'readwrite');
+    const store = tx.objectStore(HANDOFF_STORE);
+    const getReq = store.get(id);
+    getReq.onsuccess = () => {
+      const rec = getReq.result;
+      if (!rec) { resolve(null); return; }
+      store.delete(id);          // 一度使ったら削除
+      resolve(rec.data);
+    };
+    getReq.onerror = () => reject(getReq.error);
+  });
+  db.close();
+  return data;
+}
+
+// Autoload sample / handoff if query string says so
 const params = new URLSearchParams(location.search);
-if (params.get('sample') === '1') {
+const handoffId = params.get('handoff');
+if (handoffId) {
+  (async () => {
+    try {
+      const data = await consumeHandoff(handoffId);
+      if (!data) {
+        showError('受け渡しデータが見つかりませんでした。タブを開き直した場合は、ダウンロードしたファイルをここにドロップしてください。');
+        return;
+      }
+      await loadDoc(data);
+      // URL から handoff パラメータを消す（リロードでエラーにならないように）
+      history.replaceState({}, '', location.pathname);
+    } catch (e) {
+      console.error(e);
+      showError('受け渡しデータの読み取りに失敗しました: ' + (e?.message || e));
+    }
+  })();
+} else if (params.get('sample') === '1') {
   loadSampleBtn.click();
 }
