@@ -4,12 +4,46 @@
  */
 
 (() => {
+  // ---------- Persistence ----------
+  // 回答の進捗のみ localStorage に保存する（録画/特徴点データはメモリ上のみ）
+  const PERSIST_KEY = 'qids-j-progress-v1';
+  const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;  // 24時間で自動破棄
+
+  function loadPersisted() {
+    try {
+      const raw = localStorage.getItem(PERSIST_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || Date.now() - obj.savedAt > PERSIST_TTL_MS) {
+        localStorage.removeItem(PERSIST_KEY);
+        return null;
+      }
+      if (!Array.isArray(obj.answers) || obj.answers.length !== QUESTIONS.length) return null;
+      return obj;
+    } catch (e) { return null; }
+  }
+
+  function persist() {
+    try {
+      localStorage.setItem(PERSIST_KEY, JSON.stringify({
+        savedAt: Date.now(),
+        current: state.current,
+        answers: state.answers
+      }));
+    } catch (e) { /* quota/private mode — ignore */ }
+  }
+
+  function clearPersist() {
+    try { localStorage.removeItem(PERSIST_KEY); } catch (e) {}
+  }
+
   // ---------- State ----------
   const state = {
     current: 0,
     answers: new Array(QUESTIONS.length).fill(null),
     useCamera: false,
-    result: null
+    result: null,
+    crisisShownForSession: false
   };
 
   // ---------- DOM ----------
@@ -100,8 +134,27 @@
   }
 
   function goQuiz() {
+    // 前回の未完了セッションがあれば再開するかを尋ねる（カメラなしフロー限定）
+    const persisted = loadPersisted();
+    if (persisted && !state.useCamera) {
+      const filled = persisted.answers.filter(a => a !== null).length;
+      if (filled > 0) {
+        const resume = confirm(
+          `前回の途中までの回答が残っています（${filled}/${QUESTIONS.length} 問回答済み）。続きから再開しますか？\n\n「キャンセル」を押すと最初からやり直します。`
+        );
+        if (resume) {
+          state.current = Math.min(persisted.current, QUESTIONS.length - 1);
+          state.answers = [...persisted.answers];
+          renderQuestion();
+          switchScreen('quiz');
+          return;
+        }
+      }
+      clearPersist();
+    }
     state.current = 0;
     state.answers.fill(null);
+    clearPersist();
     renderQuestion();
     switchScreen('quiz');
   }
@@ -163,6 +216,7 @@
     });
     nextBtn.disabled = false;
     if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });
+    persist();
 
     // Q12（index 11, 自殺念慮）で 2 以上 → 危機介入モーダルを即時表示
     if (state.current === 11 && idx >= 2) {
@@ -237,6 +291,7 @@
       await FaceRecorder.stop();
     }
 
+    clearPersist();  // 完了したら進捗を破棄
     renderResult(result);
     switchScreen('result');
   }
@@ -367,6 +422,7 @@
       const confirmed = confirm('記録したデータと映像は失われます。やり直しますか？');
       if (!confirmed) return;
     }
+    clearPersist();
     state.current = 0;
     state.answers.fill(null);
     state.result = null;
