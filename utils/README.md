@@ -1,6 +1,30 @@
 # utils — 記録データの読み込みサンプル
 
-QIDS-J webapp が書き出す `qids-j_landmarks_*.json(.gz)` を読み込む最小サンプルを置いてあります。
+QIDS-J webapp が書き出すファイルを読み込む最小サンプルを置いてあります。
+
+## v1 と v2 でファイル構成が異なります
+
+| バージョン | 問卷終了時にダウンロードできるもの |
+|---|---|
+| **v1**（旧実装・live detection） | `qids-j_recording_*.webm` ＋ `qids-j_landmarks_*.json(.gz)` — 特徴点データは録画中にリアルタイムで抽出済み |
+| **v2**（現行・post-hoc） | `qids-j_recording_*.webm` ＋ `qids-j_session_*.json`（メタ情報 + events + questionSegments + 回答のみ。<br>`frames[]` は空） |
+
+v2 では、録画中は MediaRecorder のみ動作し、特徴点は問卷終了後にユーザーが
+分析ボタンを押した時点で `js/extract.mjs` が webm を MediaPipe に通して抽出します。
+抽出結果は分析ビューアーに直接渡されるため、**通常のユーザーが特徴点 JSON を手動で
+扱う場面は減りました**。
+
+### 特徴点データを手元で解析したい場合の流れ（v2）
+
+1. 問卷終了後、「録画 (webm)」と「セッションログ (json)」をダウンロード
+2. `analyze.html` に webm + session.json をまとめてドロップ → 抽出 → ブラウザの
+   DevTools から IndexedDB の `qids-j-handoff` ストアを見ると、抽出済みの
+   完全 JSON が入っています。または、
+3. 抽出後の JSON が必要なら analyze 側に将来「JSON エクスポート」ボタンを足すことも可能
+   （現時点未実装）
+
+既存の **v1 landmark JSON は analyze.html でも `utils/decode.py` でもそのまま読めます**
+— このフォルダ配下のサンプルコードは v1 / v2 どちらの形式にも対応しています。
 
 ## ファイルフォーマット
 

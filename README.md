@@ -82,14 +82,39 @@ npx serve .
 
 ---
 
-## 技術ノート
+## アーキテクチャ（v2: post-hoc extraction）
 
-- **MediaPipe FaceLandmarker** を [@mediapipe/tasks-vision@0.10.14](https://www.npmjs.com/package/@mediapipe/tasks-vision) から jsDelivr 経由で動的 import しています。モデル `face_landmarker.task` は Google が公開している公式 CDN から取得し、ブラウザにキャッシュされます。
-- 検出は `setTimeout` ベースで **30 fps** に節流し、VIDEO モード（帧間追跡あり）で安定した 478 点 3D ランドマークを得ます。`detectForVideo` は同期実行ですが 1 frame あたり 8–15 ms 程度なので、UI イベントは詰まりません。
-- 最初の推論時には GPU シェーダーのコンパイルが走るため、問卷画面に入る前にダミー画像で 1 回ウォームアップしています。
-- 録画映像と特徴点ログはブラウザ内で `Blob` として保持され、ダウンロード時に `CompressionStream('gzip')` で圧縮して `.json.gz` を書き出します（非圧縮 `.json` も選択可）。
-- 時間基準は `performance.now()` を使い、システム時刻のドリフトに影響されないようにしています。
-- 画面右上の摄像头プレビューに、頭部のヨー / ピッチ / ロールがリアルタイム表示されます（4×4 変換行列から算出）。
+v2 では問卷中に MediaPipe を走らせず、**録画のみ** を行います。表情の特徴点抽出は
+問卷終了後のユーザー操作で、録画済み webm を再生しながら MediaPipe に通して
+実施します。これにより、弱い GPU（例: Intel UHD）でも問卷 UI が一切カクつかず、
+抽出精度も GPU 依存で決まらなくなります（時間はかかります）。
+
+```
+┌ 問卷中 ────────────────────────────┐     ┌ 問卷終了後 ─────────────────────┐
+│ [Video] ─ MediaRecorder ─ webm Blob │ →   │ extract.mjs                     │
+│ [Events] ─ performance.now() ────── │ →   │   ├─ webm を <video> で再生     │
+│ question_enter / answer_selected /  │     │   ├─ 各フレームを MediaPipe へ │
+│ baseline_start / baseline_end 等     │     │   └─ 478pts + 52bs + 4x4mat    │
+└─────────────────────────────────────┘     │                                 │
+                                            │ analyze.html ← handoff or drop  │
+                                            └─────────────────────────────────┘
+```
+
+抽出時のオプション:
+- **fps 10 / 20 / 30 (既定) / 60** — 高い fps ほど時間がかかるが微表情を捉えやすい
+- **GPU / CPU 自動選択** — GPU 推論が 70ms/frame を超えたら WASM SIMD (CPU) にフォールバック
+- **EMA 時間平滑化** — Off / 弱 / 中 / 強 の 4 段階
+
+### 技術ノート
+
+- MediaPipe FaceLandmarker は [@mediapipe/tasks-vision@0.10.14](https://www.npmjs.com/package/@mediapipe/tasks-vision) を jsDelivr 経由で動的 import。モデル `face_landmarker.task` はリポジトリ内に SHA-384 つきで同梱（CI でハッシュ一致を検証）。
+- 時間軸: `event.t`（recorder.js 出力）と `video.currentTime * 1000` は同じ `mediaRecorder.start()` 時刻を起点にしており、**ずれ無し**で対応します（`meta.timebaseAligned: true`）。
+- 録画映像は `Blob` として保持され、webm のまま直接ダウンロードできます。v1 互換の `.json.gz` ダウンロードは抽出後の分析ビューアーから行えます。
+- 分析ビューアー (`analyze.html`) はスタンドアロンで、任意の webm（本ツール外で録った映像も可）をドロップして特徴点抽出・可視化できます。
+
+### v1 → v2 の移行
+
+v1 は [`v1.0`](https://github.com/TPR-WLW/qids-j-webapp/releases/tag/v1.0) で凍結しています。v1 でダウンロードした特徴点 JSON は v2 の analyze ビューアーでもそのまま開けます。
 
 ### 出力される特徴点 JSON
 
