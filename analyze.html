@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#5b8fb9">
+  <meta name="description" content="QIDS-J webapp で書き出した特徴点 JSON を 3D で再生・可視化するローカル専用ビューアー。">
+  <meta name="robots" content="noindex">
+  <title>Analyze | QIDS-J 特徴点ビューアー</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/analyze.css">
+
+  <!-- Three.js をバージョン固定 + import map で OrbitControls の相対 import を解決 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three":         "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body class="analyze-body">
+  <header class="analyze-header">
+    <div>
+      <h1>QIDS-J 特徴点ビューアー</h1>
+      <p class="subtitle muted">ローカル専用・アップロードなし · 読み込んだファイルはブラウザ内でのみ処理されます</p>
+    </div>
+    <a class="btn btn-ghost btn-small" href="./">← メインに戻る</a>
+  </header>
+
+  <!-- ============ Drop zone ============ -->
+  <section id="dropPanel" class="card drop-panel">
+    <div class="drop-zone" id="dropZone" tabindex="0" aria-label="特徴点 JSON をドロップ">
+      <div class="drop-icon" aria-hidden="true">📊</div>
+      <h2>特徴点 JSON をここにドロップ</h2>
+      <p class="muted">または
+        <label class="file-label">
+          ファイルを選択<input type="file" id="fileInput" accept=".json,.gz,.json.gz" hidden>
+        </label>
+        / <button class="link-btn" id="loadSampleBtn">サンプルデータで試す</button>
+      </p>
+      <p class="tiny muted">対応形式: <code>*.json</code> / <code>*.json.gz</code>（QIDS-J webapp が書き出したもの）</p>
+    </div>
+    <div id="loadError" class="banner banner-warn" hidden></div>
+  </section>
+
+  <!-- ============ Viewer (hidden until file loaded) ============ -->
+  <section id="viewerRoot" class="viewer-root" hidden>
+
+    <!-- Meta summary -->
+    <article class="card meta-summary">
+      <header>
+        <h2 id="metaTitle">セッション概要</h2>
+        <button id="unloadBtn" class="btn btn-ghost btn-small">別のファイルを読む</button>
+      </header>
+      <div class="meta-grid" id="metaGrid"></div>
+    </article>
+
+    <!-- Main: 3D viewer + playback -->
+    <article class="card viewer-card">
+      <div class="viewer-layout">
+        <div class="viewer-3d" id="viewer3dHost">
+          <canvas id="viewer3dCanvas"></canvas>
+          <div class="viewer-overlay">
+            <div class="viewer-info">
+              <span id="viewerPose" class="pose-readout">Y-- P-- R--°</span>
+              <span id="viewerFrameNo" class="frame-readout">frame -/-</span>
+            </div>
+            <div class="viewer-hint">ドラッグで回転 · ホイールでズーム</div>
+          </div>
+        </div>
+
+        <div class="viewer-side">
+          <h3>表示</h3>
+          <label class="check"><input type="checkbox" id="toggleMesh" checked><span>ワイヤーフレーム（顔面メッシュ）</span></label>
+          <label class="check"><input type="checkbox" id="togglePoints" checked><span>478 点</span></label>
+          <label class="check"><input type="checkbox" id="toggleFeatures" checked><span>目・眉・唇・虹彩ハイライト</span></label>
+          <label class="check"><input type="checkbox" id="toggleBaseline"><span>ベースラインとの差分を色で表示</span></label>
+
+          <h3>再生速度</h3>
+          <select id="speedSelect" class="select">
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Playback bar -->
+      <div class="playback-bar">
+        <button id="playBtn" class="btn btn-primary btn-small" aria-label="再生／停止">▶</button>
+        <span id="timeText" class="muted">0.0 / 0.0 s</span>
+        <input id="seekBar" type="range" min="0" max="0" step="1" value="0" class="seek">
+      </div>
+    </article>
+
+    <!-- Questions timeline -->
+    <article class="card">
+      <h2>質問ごとのタイムライン</h2>
+      <p class="muted tiny">バーをクリックすると、その質問の開始時刻に再生ヘッドが移動します。</p>
+      <div class="q-timeline" id="qTimeline"></div>
+    </article>
+
+    <!-- Key blendshape traces -->
+    <article class="card">
+      <h2>主要 Blendshape の時間変化</h2>
+      <p class="muted tiny">縦線は質問遷移 / 横線は現在の再生位置。</p>
+      <div class="traces" id="blendTraces"></div>
+    </article>
+
+    <!-- Full heatmap -->
+    <article class="card">
+      <h2>全 52 Blendshape のヒートマップ</h2>
+      <p class="muted tiny">行: 各 blendshape / 列: 時間 / 明るさ: スコア（0–1）</p>
+      <div class="heatmap-wrap">
+        <canvas id="heatmapCanvas"></canvas>
+        <div class="heatmap-labels" id="heatmapLabels"></div>
+      </div>
+    </article>
+
+    <!-- Head pose -->
+    <article class="card">
+      <h2>頭部姿勢</h2>
+      <div class="traces" id="headposeTraces"></div>
+    </article>
+  </section>
+
+  <footer class="footer">
+    <small>データはすべてブラウザ内で処理されます。Three.js r160 · QIDS-J webapp</small>
+  </footer>
+
+  <!-- 分析ロジックは ES module -->
+  <script type="module" src="js/analyze.mjs"></script>
+</body>
+</html>
