@@ -602,8 +602,11 @@ select.select {
 /* ---------- Camera panel (floating preview) ---------- */
 .camera-panel {
   position: fixed;
-  top: 16px; right: 16px;
-  width: 220px;
+  top: 16px;
+  /* コンテンツ列（中央 720px）の右ガターに収め、UI を隠さないようにする。
+     ガターが足りない狭い画面では端に寄せる（最低 12px）。 */
+  right: max(12px, calc((100% - 720px) / 2 - 162px));
+  width: 150px;
   z-index: 100;
   background: #0d1b24;
   border-radius: 14px;
@@ -651,6 +654,116 @@ select.select {
   background: #0d1b24;
   text-align: center;
 }
+
+/* ---------- ECG 電極装着位置（図 + 注記） ---------- */
+.ecg-place { margin: 8px 0 2px; }
+.ecg-place-img {
+  display: block;
+  width: 100%;
+  max-width: 560px;        /* 図にテキストが含まれるため読める大きさで表示 */
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid #e2e8ec;
+  background: #fff;
+}
+/* 画像が読み込めた場合は注記を隠す（図にテキストが含まれるため）。
+   画像が無い/失敗した場合のみ注記テキストを表示する。 */
+.ecg-place .ecg-place-note { display: none; color: #455; line-height: 1.55; }
+.ecg-place.noimg .ecg-place-img { display: none; }
+.ecg-place.noimg .ecg-place-note { display: block; }
+
+/* ---------- 実験の流れ（ステップ可視化） ---------- */
+.exp-flow {
+  display: flex;
+  align-items: flex-start;
+  margin: 10px 0 8px;
+}
+.exp-step {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+  padding: 0 2px;
+}
+.exp-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 21px;
+  left: calc(50% + 24px);
+  right: calc(-50% + 24px);
+  height: 2px;
+  background: #cdd6dd;
+  z-index: 0;
+}
+.exp-ico {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: #eef4fb;
+  border: 2px solid #cdd6dd;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; line-height: 1;
+  position: relative; z-index: 1;
+}
+.exp-step.rest .exp-ico {
+  background: #e8f5ee;
+  border-color: var(--c-normal);
+}
+.exp-label { font-size: 11.5px; color: #455; margin-top: 6px; line-height: 1.25; }
+.exp-label small { display: block; color: var(--c-normal); font-weight: 700; font-size: 10.5px; margin-top: 1px; }
+
+@media (max-width: 560px) {
+  .exp-flow { flex-direction: column; align-items: stretch; }
+  .exp-step { flex-direction: row; align-items: center; gap: 12px; text-align: left; padding: 5px 0; }
+  .exp-step:not(:last-child)::after { top: 44px; bottom: -5px; left: 21px; right: auto; width: 2px; height: auto; }
+  .exp-label { margin-top: 0; }
+  .exp-label small { display: inline; margin-left: 6px; }
+}
+
+/* ---------- 安静時測定（全画面 注視十字） ---------- */
+/* active 時は全画面の無地オーバーレイにし、浮動 UI（カメラ/心拍/サーバ）を覆い隠す */
+.screen.rest-screen.active {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef2f4;   /* 落ち着いた無地背景 */
+}
+.fixation-cross {
+  width: 44px; height: 44px;
+  position: relative;
+}
+.fixation-cross::before,
+.fixation-cross::after {
+  content: "";
+  position: absolute;
+  background: #3a4a55;
+  border-radius: 1px;
+}
+.fixation-cross::before { left: 50%; top: 0; width: 3px; height: 100%; transform: translateX(-50%); }
+.fixation-cross::after  { top: 50%; left: 0; height: 3px; width: 100%; transform: translateY(-50%); }
+/* 操作者向けの控えめなタイマー／スキップ（被験者は気づきにくい淡さ） */
+.rest-corner {
+  position: fixed;
+  right: 18px; bottom: 16px;
+  display: flex; align-items: center; gap: 14px;
+  font: 12px/1 "Segoe UI", system-ui, sans-serif;
+  color: #9aa8b2;
+  opacity: .55;
+  z-index: 201;
+}
+.rest-corner:hover { opacity: .9; }
+.rest-corner #restCountdown { font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+.rest-corner button {
+  background: none; border: none; color: inherit; cursor: pointer;
+  font: inherit; padding: 4px 6px;
+}
+.rest-corner button:hover { color: #5b6b78; text-decoration: underline; }
 
 /* ---------- Footer ---------- */
 .footer {

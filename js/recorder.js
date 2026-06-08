@@ -68,7 +68,11 @@ const FaceRecorder = (() => {
       await videoEl.play();
 
       recordedMime = pickMime();
-      mediaRecorder = new MediaRecorder(stream, { mimeType: recordedMime });
+      const mrOpts = { mimeType: recordedMime };
+      // High bitrate to preserve micro-expression detail for later ML analysis.
+      const vbps = options?.videoBitsPerSecond || 12_000_000;
+      if (vbps) mrOpts.videoBitsPerSecond = vbps;
+      mediaRecorder = new MediaRecorder(stream, mrOpts);
       chunks = [];
       recorderFirstDataMs = null;
       mediaRecorder.ondataavailable = (e) => {
@@ -189,11 +193,16 @@ const FaceRecorder = (() => {
   // ============================================================
 
   function pickMime() {
+    // Prefer MP4/H.264 for ML/annotation tooling compatibility and reliable
+    // frame-exact seeking; fall back to WebM/VP9 if the browser can't record MP4.
     const candidates = [
+      'video/mp4;codecs=avc1.640028',  // H.264 High
+      'video/mp4;codecs=avc1.42E01E',  // H.264 Baseline
+      'video/mp4;codecs=h264',
+      'video/mp4',
       'video/webm;codecs=vp9',
       'video/webm;codecs=vp8',
-      'video/webm',
-      'video/mp4'
+      'video/webm'
     ];
     for (const m of candidates) {
       if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;

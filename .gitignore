@@ -27,3 +27,8 @@ qids-j_*.csv
 # Temporary OCR scratch
 _page*.png
 _ocr.txt
+
+# ECG backend runtime (keep server/ code + server/sdk; ignore sessions & caches)
+data/
+**/__pycache__/
+*.pyc
