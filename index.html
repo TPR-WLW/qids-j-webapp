@@ -22,9 +22,59 @@
   <meta name="twitter:title" content="QIDS-J セルフチェック">
   <meta name="twitter:description" content="厚生労働省 QIDS-J ベースのセルフチェック Web アプリ。ローカル処理・プライバシー重視。">
 
-  <title>QIDS-J | 抑うつ症状チェック</title>
+  <title>QIDS-J + ECG | 抑うつ症状チェック</title>
   <link rel="stylesheet" href="css/style.css">
   <!-- MediaPipe は v2 では問卷中に読み込まない（分析時に js/extract.mjs が dynamic import する）-->
+  <style>
+    /* サーバ稼働状態インジケータ（左上・常時表示） */
+    .server-status {
+      position: fixed; top: 12px; left: 12px; z-index: 61;
+      display: inline-flex; align-items: center; gap: 7px;
+      background: rgba(20, 30, 40, 0.82); color: #fff; border-radius: 999px;
+      padding: 6px 11px; font: 12px/1.2 "Segoe UI", system-ui, sans-serif;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .2);
+    }
+    .server-status .srv-dot { width: 8px; height: 8px; border-radius: 50%; background: #3ad29f; transition: background .2s; }
+    .server-status.down .srv-dot { background: #e1604f; }
+    /* ECG 実時間オーバーレイ（左上・サーバ状態の下に表示） */
+    .ecg-overlay {
+      position: fixed; top: 50px; left: 12px; z-index: 60;
+      background: rgba(20, 30, 40, 0.82); color: #fff; border-radius: 10px;
+      padding: 8px 12px; font: 13px/1.3 "Segoe UI", system-ui, sans-serif;
+      box-shadow: 0 4px 16px rgba(0,0,0,.25); min-width: 116px;
+    }
+    .ecg-overlay.hidden { display: none; }
+    .ecg-ov-row { display: flex; align-items: baseline; gap: 6px; }
+    .ecg-ov-row.small { font-size: 11px; opacity: .85; margin-top: 3px; }
+    .ecg-ov-label { opacity: .7; width: 32px; }
+    .ecg-ov-val { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .ecg-ov-unit { opacity: .6; font-size: 11px; }
+    .ecg-ov-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#3ad29f; margin-right:4px; vertical-align:middle; }
+    .ecg-ov-dot.bad { background:#e1604f; }
+    /* 被験者情報フォーム */
+    .subject-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+    @media (max-width: 560px) { .subject-grid { grid-template-columns: 1fr; } }
+    .subject-grid .extract-field, .subject-note { display: flex; flex-direction: column; gap: 4px; }
+    .subject-grid .extract-field > span, .subject-note > span { font-size: 13px; color: #5b6b78; }
+    .subject-note textarea { width: 100%; resize: vertical; font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #cdd6dd; }
+    /* ECG ペアリング部件（右上） */
+    .ecg-pair { position: fixed; top: 12px; right: 12px; z-index: 60; font: 13px/1.3 "Segoe UI", system-ui, sans-serif; }
+    .ecg-pair.hidden { display: none; }
+    .ecg-pair-pill { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+      background: rgba(20,30,40,.82); color: #fff; border: none; border-radius: 999px; padding: 7px 12px;
+      box-shadow: 0 4px 14px rgba(0,0,0,.2); font: inherit; }
+    .ecg-pair-pill .pw-caret { opacity: .7; font-size: 11px; }
+    .ecg-pair-panel { margin-top: 6px; width: 250px; background: #fff; color: #20303f; border: 1px solid #cdd6dd;
+      border-radius: 10px; padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+    .ecg-pair-panel.hidden { display: none; }
+    .ecg-pair-panel label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #5b6b78; margin: 8px 0; }
+    .ecg-pair-panel .pw-info { font-size: 12px; color: #455; margin: 6px 0; white-space: pre-line; }
+    .pw-btns { display: flex; gap: 8px; margin-top: 6px; }
+    .btn-sm { padding: 6px 12px !important; font-size: 13px !important; }
+    .pw-msg { margin-top: 6px; min-height: 1em; }
+    .pw-msg.err { color: #b42318; }
+    .pw-msg.ok { color: #1f7a4d; }
+  </style>
 </head>
 <body>
   <!-- カメラプレビュー（録画のみ。ランドマーク解析は終了後に行う） -->
@@ -39,36 +89,157 @@
     <div class="camera-status" id="cameraStatus">カメラ準備中…</div>
   </div>
 
+  <!-- サーバ稼働状態インジケータ（左上・常時表示） -->
+  <div id="serverStatus" class="server-status down" aria-live="polite" title="保存・ECG サーバ（server.py）の稼働状態">
+    <span class="srv-dot" id="srvDot"></span>
+    <span id="srvText">サーバ確認中…</span>
+  </div>
+
+  <!-- ECG 実時間オーバーレイ（回答中に左上に表示） -->
+  <div id="ecgOverlay" class="ecg-overlay hidden" aria-hidden="true" aria-label="ECG 実時間表示">
+    <div class="ecg-ov-row"><span class="ecg-ov-dot" id="ovDot"></span><span class="ecg-ov-label">HR</span><span id="ovHr" class="ecg-ov-val">—</span><span class="ecg-ov-unit">bpm</span></div>
+    <div class="ecg-ov-row small"><span id="ovQuality">信号 —</span></div>
+    <div class="ecg-ov-row small"><span id="ovHrv">RMSSD — / SDNN —</span></div>
+  </div>
+
+  <!-- ECG ペアリング部件（設定中に右上に表示） -->
+  <div id="ecgPairWidget" class="ecg-pair hidden">
+    <button type="button" class="ecg-pair-pill" id="ecgPairPill" aria-expanded="false">
+      <span class="ecg-ov-dot" id="pwDot"></span>
+      <span id="pwStatus">ECG 確認中…</span>
+      <span class="pw-caret">▾</span>
+    </button>
+    <div class="ecg-pair-panel hidden" id="ecgPairPanel">
+      <p class="tiny muted" style="margin:0 0 6px">① USB 接続 → ② 読み取り → ③ ペアリング → ④ USB を抜いて装着・電源 ON → ⑤ 無線受信テスト。</p>
+      <label>ECG モード（任意）
+        <select id="pwEcgMode" class="select">
+          <option value="">現在のモードを維持</option>
+          <option value="rri">心拍間隔 RRI · 通常(3拍1送信)</option>
+          <option value="rri_acc_1s">心拍間隔 RRI · 低遅延(1拍1送信)</option>
+        </select>
+      </label>
+      <div class="pw-info" id="pwInfo">—</div>
+      <div class="pw-btns">
+        <button type="button" id="pwRead" class="btn btn-ghost btn-sm">読み取り</button>
+        <button type="button" id="pwPair" class="btn btn-primary btn-sm">ペアリング</button>
+      </div>
+      <div class="pw-btns" style="margin-top:6px">
+        <button type="button" id="pwWifi" class="btn btn-ghost btn-sm" style="width:100%">📡 無線受信テスト</button>
+      </div>
+      <div class="pw-msg tiny" id="pwMsg"></div>
+      <p class="tiny muted" style="margin:8px 0 0">※ 無線受信は計測（回答）開始時に始まります。装着後はテストで確認できます。<br>詳細: <a href="/ecg/" target="_blank" rel="noopener">ECG パネル →</a></p>
+    </div>
+  </div>
+
   <main class="container">
-    <!-- ========== Screen 1: イントロ ========== -->
-    <section id="introScreen" class="screen active">
+    <!-- ========== Screen 0: 被験者情報（実験用） ========== -->
+    <section id="subjectScreen" class="screen active">
       <header class="brand">
-        <div class="brand-mark">QIDS-J</div>
-        <h1>簡易抑うつ症状尺度</h1>
-        <p class="subtitle">Quick Inventory of Depressive Symptomatology — 日本語版</p>
+        <div class="brand-mark">QIDS-J + ECG</div>
+        <h1>計測情報の入力</h1>
+        <p class="subtitle">実験用：被験者情報を入力してください（ID 以外は任意・未回答可）</p>
+      </header>
+      <article class="card">
+        <h2>検査の種類</h2>
+        <label class="extract-field" style="margin-bottom:20px"><span>質問票を選択</span>
+          <select id="surveySelect" class="select"></select></label>
+
+        <h2>被験者情報</h2>
+        <div class="subject-grid">
+          <label class="extract-field"><span>氏名 / ID（必須）</span>
+            <input type="text" id="subjId" class="select" placeholder="例: yamada / S001" autocomplete="off">
+            <span id="subjIdHint" class="tiny" style="display:none;color:#b54708">※ ファイル名のため、<strong>ローマ字</strong>での入力を推奨します（漢字・かなは可ですが避けてください）。</span></label>
+          <label class="extract-field"><span>年齢層</span>
+            <select id="subjAge" class="select">
+              <option value="">未回答</option>
+              <option>10代</option><option>20代</option><option>30代</option><option>40代</option>
+              <option>50代</option><option>60代</option><option>70代以上</option>
+            </select></label>
+          <label class="extract-field"><span>性別</span>
+            <select id="subjSex" class="select">
+              <option value="">未回答</option><option>男性</option><option>女性</option><option>その他</option>
+            </select></label>
+          <label class="extract-field"><span>昨夜の睡眠</span>
+            <select id="subjSleep" class="select">
+              <option value="">未回答</option><option>5時間未満</option><option>5〜6時間</option>
+              <option>6〜7時間</option><option>7〜8時間</option><option>8時間以上</option>
+            </select></label>
+          <label class="extract-field"><span>直近2時間のカフェイン</span>
+            <select id="subjCaffeine" class="select">
+              <option value="">未回答</option><option>あり</option><option>なし</option>
+            </select></label>
+          <label class="extract-field"><span>本日の運動</span>
+            <select id="subjExercise" class="select">
+              <option value="">未回答</option><option>した</option><option>していない</option>
+            </select></label>
+          <label class="extract-field"><span>服薬</span>
+            <select id="subjMed" class="select">
+              <option value="">未回答</option><option>あり</option><option>なし</option>
+            </select></label>
+        </div>
+        <label class="subject-note" style="margin-top:14px"><span>自由記述（特記事項・実験条件など・任意）</span>
+          <textarea id="subjNote" rows="3" placeholder="任意"></textarea></label>
+
+        <div class="notice" id="ecgNotice" style="margin-top:16px; display:none">
+          ECG デバイス: <strong id="ecgDevStatus">確認中…</strong>
+          <a href="/ecg/" target="_blank" rel="noopener">ペアリング / 設定を開く →</a>
+          <p class="tiny muted" style="margin:6px 0 0">USB でセンサーをペアリング後、USB を抜いて装着・電源 ON にしてください。回答中、心電は自動で記録されます。</p>
+        </div>
+
+        <div class="btn-row">
+          <button id="subjectNext" class="btn btn-primary">次へ（同意・開始）</button>
+        </div>
+      </article>
+    </section>
+
+    <!-- ========== Screen 1: イントロ ========== -->
+    <section id="introScreen" class="screen">
+      <header class="brand">
+        <div class="brand-mark" id="introBrand">QIDS-J</div>
+        <h1 id="introTitle">簡易抑うつ症状尺度</h1>
+        <p class="subtitle" id="introSubtitle">Quick Inventory of Depressive Symptomatology — 日本語版</p>
       </header>
 
       <article class="card">
         <div class="banner banner-warn">
           <strong>⚠ 本ツールは医療機器ではありません。</strong>
-          うつ病の診断や治療は行えません。結果は目安であり、医療的判断には必ず医師などの専門家にご相談ください。
+          結果は目安であり、医療的判断には必ず医師などの専門家にご相談ください。
         </div>
 
         <h2>このチェックについて</h2>
-        <p>本アンケートは、厚生労働省ウェブサイトで公開されている <strong>QIDS-J</strong>（16項目・自己記入式）に基づく、うつ症状のセルフチェックです。過去 <strong>7日間</strong> のご自身の状態に最も近い選択肢をお選びください。</p>
+        <p id="introAbout">本測定で収集した個人情報はアルゴリズム開発のみに使用し、他用途への使用はしません。</p>
 
         <h3>所要時間</h3>
         <p>およそ 5 〜 10 分。1 問ずつ画面に表示されます。</p>
 
-        <h3>カメラによる記録について（任意）</h3>
+        <h3>実験説明</h3>
         <div class="notice">
-          <p>ご希望の場合のみ、回答中の表情を Web カメラで<strong>録画のみ</strong>します。回答中に負荷の高い解析は行わず、終了後に録画を元にランドマーク・ブレンドシェイプ・頭部姿勢を<strong>お好きなタイミングで抽出</strong>できます。</p>
+          <p><strong>センサーの装着</strong></p>
           <ul>
-            <li>取得データは <strong>ブラウザ内のみ</strong> で処理され、外部サーバへは一切送信されません。</li>
-            <li>データはブラウザのメモリ上にのみ保持され、<strong>ページを閉じる・再読み込みすると消去</strong>されます。必要に応じて終了時にダウンロードしてください。</li>
-            <li>顔の映像は <strong>生体認証情報に準ずる機微な情報</strong> です。同意いただけない場合は「カメラを使わずに開始」をお選びください。</li>
-            <li>カメラを使用しても、いつでも「もう一度チェックする」から中断・再開できます。</li>
+            <li><strong>① 心電（ECG）センサー（myBeat）</strong>：パッドタイプ電極を胸部に装着し、電源を ON にしてください。装着後は無線で心電を連続記録します。
+              <div class="ecg-place">
+                <img class="ecg-place-img" src="assets/ecg-pad-placement.png"
+                     alt="myBeat 電極パッドの装着位置：右側電極の中心を、身長170cm未満は鎖骨中心から80mm下・170cm以上は100mm下、身体中心線より左側（左胸部）に貼付"
+                     onerror="this.closest('.ecg-place').classList.add('noimg')">
+                <div class="ecg-place-note tiny">
+                  <strong>右側電極 中心部の装着位置目安（全パッド共通）</strong><br>
+                  高さ：身長 170cm 未満 → 鎖骨中心から <strong>80mm 下</strong>／170cm 以上 → 鎖骨中心から <strong>100mm 下</strong><br>
+                  横方向：装着者から見て身体中心線より <strong>左側（左胸部）</strong>
+                </div>
+              </div>
+            </li>
+            <li><strong>② カメラ（頭部の位置）</strong>：顔がカメラ映像の<strong>中央</strong>に来るように座り、画面を正面から見てください。顔全体が枠内に収まる距離を保ち、測定中は大きく動かないようにしてください。</li>
           </ul>
+          <p><strong>実験の流れ</strong></p>
+          <div class="exp-flow" role="list" aria-label="実験の流れ">
+            <div class="exp-step" role="listitem"><span class="exp-ico">📝</span><span class="exp-label">被験者情報</span></div>
+            <div class="exp-step" role="listitem"><span class="exp-ico">❤️</span><span class="exp-label">センサー装着・同意</span></div>
+            <div class="exp-step rest" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（前）<small>約3分</small></span></div>
+            <div class="exp-step" role="listitem"><span class="exp-ico">❓</span><span class="exp-label">質問への回答</span></div>
+            <div class="exp-step rest" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（後）<small>約3分</small></span></div>
+            <div class="exp-step" role="listitem"><span class="exp-ico">📊</span><span class="exp-label">結果・保存</span></div>
+          </div>
+          <p class="tiny muted" style="margin:6px 0 0">※ 安静時測定の間は、画面の中央を見つめ、リラックスして大きく動かないようにしてください。心電と映像はこの間も記録されています。</p>
         </div>
 
         <h3>同意事項</h3>
@@ -98,15 +269,15 @@
               <span>解像度</span>
               <select id="camResolution" class="select">
                 <option value="480">480p (640×480・最も軽い)</option>
-                <option value="720" selected>720p HD (1280×720・推奨)</option>
-                <option value="1080">1080p Full HD (1920×1080・最も高精細)</option>
+                <option value="720">720p HD (1280×720)</option>
+                <option value="1080" selected>1080p Full HD (1920×1080・推奨)</option>
               </select>
             </label>
             <label class="extract-field">
               <span>フレームレート</span>
               <select id="camFramerate" class="select">
-                <option value="30" selected>30 fps</option>
-                <option value="60">60 fps (対応カメラのみ)</option>
+                <option value="30">30 fps</option>
+                <option value="60" selected>60 fps (対応カメラのみ・推奨)</option>
               </select>
             </label>
           </div>
@@ -122,7 +293,7 @@
           </button>
         </div>
 
-        <p class="tiny">QIDS-J で 6 点以上が 2 週間以上続く場合、または Q12（死や自殺についての考え）で点数がついた場合は、<strong>できるだけ早く</strong>医療機関・専門家にご相談ください。</p>
+        <p class="tiny" id="introCaution">QIDS-J で 6 点以上が 2 週間以上続く場合、または Q12（死や自殺についての考え）で点数がついた場合は、<strong>できるだけ早く</strong>医療機関・専門家にご相談ください。</p>
       </article>
     </section>
 
@@ -141,6 +312,17 @@
           <button id="baselineSkip" class="btn btn-ghost">スキップ</button>
         </div>
       </article>
+    </section>
+
+    <!-- ========== Screen 1.6: 安静時測定（前/後・3分・全画面 注視十字） ========== -->
+    <section id="restScreen" class="screen rest-screen" aria-label="安静時測定">
+      <div class="fixation-cross" aria-hidden="true"></div>
+      <!-- 操作者向けの控えめなタイマー／スキップ（被験者は十字に集中） -->
+      <div class="rest-corner">
+        <span id="restPhaseLabel">安静</span>
+        <span id="restCountdown">3:00</span>
+        <button id="restSkip" type="button">スキップ ›</button>
+      </div>
     </section>
 
     <!-- ========== Screen 2: 問卷 ========== -->
@@ -261,7 +443,7 @@
 
         <div class="score-display">
           <div class="score-ring" id="scoreRing">
-            <div class="score-number"><span id="scoreNum">0</span><small>/27</small></div>
+            <div class="score-number"><span id="scoreNum">0</span><small>/<span id="scoreMax">27</span></small></div>
           </div>
           <div class="severity-box">
             <div class="label">重症度</div>
@@ -269,20 +451,20 @@
           </div>
         </div>
 
-        <div class="severity-scale">
-          <div class="sev-item" data-sev="normal"><span>0 – 5</span>正常</div>
-          <div class="sev-item" data-sev="mild"><span>6 – 10</span>軽度</div>
-          <div class="sev-item" data-sev="moderate"><span>11 – 15</span>中等度</div>
-          <div class="sev-item" data-sev="severe"><span>16 – 20</span>重度</div>
-          <div class="sev-item" data-sev="extreme"><span>21 – 27</span>きわめて重度</div>
-        </div>
+        <div class="severity-scale" id="severityScale"><!-- 量表に応じて動的生成 --></div>
 
         <div class="notice notice-soft">
           <p id="resultAdvice">—</p>
         </div>
 
+        <div class="banner" id="autosaveStatus" style="background:#e8f5ee;border-color:#bfe6d0;color:#1f7a4d">
+          全データを保存中…
+        </div>
+
+        <details id="manualExportSection" style="margin-top:10px">
+        <summary class="muted tiny" style="cursor:pointer">手動エクスポート / 表情抽出（通常は不要：全データは自動保存されます）</summary>
         <h3>録画データ</h3>
-        <p class="muted tiny" style="margin-bottom:8px">録画 (webm) と回答データ (CSV) は今すぐダウンロードできます。表情の特徴点抽出は<strong>お好きなタイミングで</strong>（時間がかかる処理のため、録画中の UI を軽く保つための選択）。</p>
+        <p class="muted tiny" style="margin-bottom:8px">録画と回答データは自動保存済みです。必要なら個別にもダウンロードできます。表情の特徴点抽出は<strong>後日まとめて別途</strong>行う想定です。</p>
         <div class="btn-row btn-row-wrap">
           <button id="downloadVideo" class="btn btn-outline" disabled
                   title="映像はカメラを使用した場合のみダウンロードできます">
@@ -323,9 +505,11 @@
           </button>
         </div>
         <p class="tiny muted">※ JSON フォーマット仕様と解析例は <a href="utils/" target="_blank" rel="noopener">utils/</a> 配下を参照してください。</p>
+        </details>
 
         <div class="btn-row">
-          <button id="restartBtn" class="btn btn-primary">もう一度チェックする</button>
+          <button id="finishBtn" class="btn btn-primary">完了</button>
+          <button id="restartBtn" class="btn btn-outline">もう一度チェックする</button>
         </div>
 
         <p class="tiny">※ 本結果は医学的診断ではありません。気になる症状が続く場合は、専門の医療機関へご相談ください。</p>
@@ -334,10 +518,10 @@
   </main>
 
   <footer class="footer">
-    <small>出典：<a href="https://www.mhlw.go.jp/bunya/shougaihoken/kokoro/dl/02.pdf" target="_blank" rel="noopener">厚生労働省「簡易抑うつ症状尺度（QIDS-J）」</a></small>
+    <small id="footerSource">出典：<a href="https://www.mhlw.go.jp/bunya/shougaihoken/kokoro/dl/02.pdf" target="_blank" rel="noopener">厚生労働省「簡易抑うつ症状尺度（QIDS-J）」</a></small>
   </footer>
 
-  <script src="js/questions.js"></script>
+  <script src="js/survey.js"></script>
   <script src="js/recorder.js"></script>
   <script src="js/app.js"></script>
 </body>

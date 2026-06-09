@@ -1,0 +1,1291 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyBeat ECG 仪表盘</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f5f6f4;
+    --panel: #ffffff;
+    --line: #e2e3df;
+    --muted: #6a7077;
+    --ink: #1f2428;
+    --accent: #1f6feb;
+    --ok: #027a48;
+    --warn: #b54708;
+    --bad: #b42318;
+    font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0; font-size: 18px; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+  .badge {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    background: #eef0ee; color: var(--muted); border: 1px solid var(--line);
+  }
+  .badge.ok { background: #e7f5ee; color: var(--ok); border-color: #bfe6d0; }
+  .badge.bad { background: #fdeceb; color: var(--bad); border-color: #f5c9c5; }
+  .badge.live { background: #fde8e6; color: var(--bad); border-color: #f5b9b3; font-weight: 600; }
+  nav { display: flex; gap: 4px; padding: 10px 20px 0; }
+  nav button {
+    background: none; border: none; padding: 8px 14px; font-size: 14px; cursor: pointer;
+    color: var(--muted); border-bottom: 2px solid transparent;
+  }
+  nav button.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  main { padding: 16px 20px 32px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  input, select {
+    font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; color: var(--ink);
+  }
+  input[type=number] { width: 110px; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+  .check input { width: auto; }
+  button.primary {
+    background: var(--accent); color: #fff; border: none; padding: 8px 18px;
+    border-radius: 6px; font-size: 14px; cursor: pointer;
+  }
+  button.danger { background: var(--bad); color: #fff; border: none; padding: 8px 18px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+  .stat { background: #fafbfa; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .charts { grid-template-columns: 1fr; } }
+  .viz-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  .viz-grid .viz-full { grid-column: 1 / -1; }
+  @media (max-width: 760px) { .viz-grid { grid-template-columns: 1fr; } }
+  #vizToggles label { white-space: nowrap; }
+  .chart h2 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  canvas { width: 100%; height: 200px; display: block; }
+  .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .msg { font-size: 13px; padding: 8px 10px; border-radius: 6px; margin-top: 10px; display: none; }
+  .msg.show { display: block; }
+  .msg.err { background: #fdeceb; color: var(--bad); }
+  .sessions-list { display: grid; gap: 8px; }
+  .session-item {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; background: #fafbfa;
+  }
+  .session-item:hover { border-color: var(--accent); }
+  .session-item .meta { font-size: 12px; color: var(--muted); }
+  dl.summary { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 13px; }
+  dl.summary dt { color: var(--muted); }
+  dl.summary dd { margin: 0; font-weight: 600; word-break: break-word; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="offlineBanner" data-i18n="offline.banner" style="display:none;background:#b42318;color:#fff;padding:8px 20px;font-size:14px;">
+  ⚠ 与本地服务断开连接，正在自动重连…（请确认 server.py 仍在运行）
+</div>
+<header>
+  <h1 data-i18n="app.title">MyBeat ECG 仪表盘</h1>
+  <div class="badges" id="badges">
+    <span class="badge" id="b-server">…</span>
+    <span class="badge" id="b-python">Python …</span>
+    <span class="badge" id="b-dll">DLL …</span>
+    <span class="badge" id="b-addr">…</span>
+    <span class="badge" id="b-state">…</span>
+  </div>
+  <select id="langSel" onchange="setLang(this.value)" style="font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:#fff">
+    <option value="zh">中文</option>
+    <option value="en">English</option>
+    <option value="ja">日本語</option>
+  </select>
+</header>
+
+<nav>
+  <button id="tab-live" class="active" onclick="showTab('live')" data-i18n="nav.live">实时采集</button>
+  <button id="tab-sessions" onclick="showTab('sessions')" data-i18n="nav.sessions">历史会话</button>
+  <button id="tab-monitor" onclick="showTab('monitor')" data-i18n="nav.monitor">服务监控</button>
+</nav>
+
+<main>
+  <!-- LIVE -->
+  <section id="view-live">
+    <!-- 第 1 步：配对区（USB 有线） -->
+    <div class="panel">
+      <h2 style="margin:0 0 4px" data-i18n="pair.title">第 1 步 · 配对（USB 有线连接）</h2>
+      <p class="hint" style="margin-top:0" data-i18n="pair.flow">工作流：USB 连接 WHS-1 → 读取设备 → 配对 → 拔下 USB → 佩戴并开机 → 无线采集。本系统仅支持无线采集。</p>
+      <div class="row" style="align-items:center">
+        <div>
+          <label data-i18n="pair.ecgLabel">配对时写入 ECG 模式</label>
+          <select id="ecgMode">
+            <option value="" data-i18n="pair.ecgKeep">保持传感器当前模式</option>
+            <option value="rri" data-i18n="pair.ecgRri">心拍间隔 RRI · 普通(3拍1发)</option>
+            <option value="rri_acc_1s" data-i18n="pair.ecgRriLow">心拍间隔 RRI · 低延迟(1拍1发)</option>
+            <option value="waveform" data-i18n="pair.ecgWave">心拍波形 Waveform</option>
+            <option value="heart_rate" data-i18n="pair.ecgHr">心拍数 Heart rate</option>
+          </select>
+        </div>
+        <button onclick="readDevices()" data-i18n="pair.read">读取设备</button>
+        <button class="primary" onclick="pairDevice()" data-i18n="pair.pair">配对（写入接收器地址）</button>
+        <span class="badge" id="pairBadge">…</span>
+      </div>
+      <dl class="summary" id="deviceInfo" style="margin-top:10px">
+        <dt data-i18n="di.rrd">接收器 RRD-1 地址（编号）</dt><dd id="di-rrd">—</dd>
+        <dt data-i18n="di.count">USB 传感器数量</dt><dd id="di-count">—</dd>
+        <dt data-i18n="di.ver">传感器固件 / 序列号</dt><dd id="di-ver">—</dd>
+        <dt data-i18n="di.cpu">传感器 CPU ID</dt><dd id="di-cpu">—</dd>
+        <dt data-i18n="di.mode">传感器当前模式</dt><dd id="di-mode">—</dd>
+        <dt data-i18n="di.ecg">传感器 ECG 模式</dt><dd id="di-ecg">—</dd>
+        <dt data-i18n="di.dest">传感器目标地址</dt><dd id="di-dest">—</dd>
+        <dt data-i18n="di.match">匹配状态</dt><dd id="di-match">—</dd>
+      </dl>
+      <div class="msg" id="pairMsg"></div>
+    </div>
+
+    <!-- 第 2 步：无线采集区 -->
+    <div class="panel">
+      <h2 style="margin:0 0 6px" data-i18n="cap.title">第 2 步 · 无线采集</h2>
+      <div class="row">
+        <div><label data-i18n="cap.duration">采集时长（秒，0 = 手动停止）</label><input type="number" id="duration" value="0" min="0" step="10"></div>
+        <div><label data-i18n="cap.output">输出文件名（留空自动命名）</label><input type="text" id="output" placeholder="session_001.csv" style="width:180px"></div>
+        <div><label data-i18n="cap.subject">受试者 ID</label><input type="text" id="subject" data-i18n-ph="cap.optional" placeholder="可选" style="width:120px"></div>
+        <div><label data-i18n="cap.note">备注</label><input type="text" id="note" data-i18n-ph="cap.optional" placeholder="可选" style="width:150px"></div>
+        <label class="check"><input type="checkbox" id="autoRecord" onchange="onAutoRecordToggle()"> <span data-i18n="cap.autoRec">同步录像</span></label>
+        <button class="primary" id="btnStart" onclick="startCollect()" disabled data-i18n="cap.start">开始采集</button>
+        <button class="danger" id="btnStop" onclick="stopCollect()" disabled data-i18n="cap.stop">停止</button>
+      </div>
+      <p class="hint" id="startHint" data-i18n="cap.hintPair">请先在上方完成配对（匹配成功）后再开始无线采集。</p>
+
+      <!-- 摄像头折叠配置：勾选“同步录像”后出现 -->
+      <div id="camBox" style="display:none;border:1px solid var(--line);border-radius:6px;padding:12px;margin-top:8px;background:#fafbfa">
+        <div class="row" style="align-items:center">
+          <strong data-i18n="cam.title">摄像头配置</strong>
+          <button id="btnCam" onclick="toggleCamera()" data-i18n="cam.open">开启摄像头</button>
+          <span class="badge" id="recBadge" data-i18n="cam.notRec">未录像</span>
+          <span class="hint" data-i18n="cam.hint">需先开启摄像头（预览正常）才能开始采集；开始采集自动录像，停止采集同时停止并保存到 data（与会话同名）。</span>
+        </div>
+        <video id="camVideo" autoplay muted playsinline style="margin-top:10px;width:100%;max-width:420px;background:#000;border-radius:6px;display:none"></video>
+        <div class="msg" id="camMsg"></div>
+      </div>
+
+      <div class="msg" id="liveMsg"></div>
+    </div>
+
+    <div class="panel">
+      <div class="stats">
+        <div class="stat"><div class="k" data-i18n="status.samples">样本数</div><div class="v" id="s-total">0</div></div>
+        <div class="stat"><div class="k" data-i18n="status.elapsed">已采集（秒）</div><div class="v" id="s-elapsed">0</div></div>
+        <div class="stat"><div class="k" data-i18n="status.rate">速率（/秒）</div><div class="v" id="s-rate">0</div></div>
+        <div class="stat"><div class="k" data-i18n="status.cleanHr">干净心率（bpm）</div><div class="v" id="s-hr">—</div></div>
+        <div class="stat"><div class="k" data-i18n="status.quality">信号质量</div><div class="v" id="s-quality">—</div></div>
+        <div class="stat"><div class="k" data-i18n="status.motion">体动强度</div><div class="v" id="s-motion">—</div></div>
+        <div class="stat"><div class="k" data-i18n="status.temp">温度（℃）</div><div class="v" id="s-temp">—</div></div>
+        <div class="stat"><div class="k" data-i18n="status.battery">低电量</div><div class="v" id="s-batt">—</div></div>
+      </div>
+    </div>
+
+    <!-- 可视化设置：勾选显示/隐藏，下方动态增删 -->
+    <div class="panel">
+      <div class="row" style="align-items:center;justify-content:space-between">
+        <strong data-i18n="viz.settingsTitle">可视化（勾选显示 / 取消隐藏）</strong>
+        <div>
+          <label data-i18n="viz.timeWindow">时间窗</label>
+          <select id="winSec" onchange="onWinChange()">
+            <option value="30" data-i18n="win.30">最近 30 秒</option>
+            <option value="60" selected data-i18n="win.60">最近 1 分钟</option>
+            <option value="120" data-i18n="win.120">最近 2 分钟</option>
+            <option value="300" data-i18n="win.300">最近 5 分钟</option>
+          </select>
+        </div>
+      </div>
+      <div id="vizToggles" class="row" style="margin-top:10px;gap:14px;flex-wrap:wrap"></div>
+    </div>
+
+    <div id="vizGrid" class="viz-grid"></div>
+  </section>
+
+  <!-- SESSIONS -->
+  <section id="view-sessions" class="hidden">
+    <div class="panel">
+      <div class="row">
+        <button class="primary" onclick="loadSessions()" data-i18n="sess.refresh">刷新会话列表</button>
+        <span class="hint" id="sessionsHint"></span>
+      </div>
+      <div class="sessions-list" id="sessionsList" style="margin-top:12px"></div>
+    </div>
+    <div class="panel hidden" id="sessionDetail">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 id="sdName" style="margin:0"></h2>
+        <div>
+          <button id="sdDownload" onclick="downloadCurrent()" data-i18n="sess.download">下载 CSV</button>
+          <button onclick="openDataDir()" data-i18n="sess.openDir">打开 data 目录</button>
+        </div>
+      </div>
+      <div id="sdMeta" class="hint" style="margin:8px 0"></div>
+      <dl class="summary" id="sdSummary"></dl>
+      <video id="sdVideo" controls playsinline style="margin-top:12px;width:100%;max-width:480px;background:#000;border-radius:6px;display:none"></video>
+      <div class="charts" style="margin-top:14px">
+        <div class="chart"><h2 data-i18n="viz.hr">心率 HR (bpm)</h2><canvas id="sc-hr"></canvas></div>
+        <div class="chart"><h2 data-i18n="viz.ecg">ECG / RRI 原始值</h2><canvas id="sc-ecg"></canvas></div>
+        <div class="chart"><h2 data-i18n="viz.temp">温度 (℃)</h2><canvas id="sc-temp"></canvas></div>
+        <div class="chart"><h2 data-i18n="viz.acc">加速度 X / Y / Z</h2><canvas id="sc-acc"></canvas></div>
+      </div>
+      <div class="charts" style="margin-top:14px">
+        <div class="chart">
+          <h2 data-i18n="viz.freqcard">频域 HRV (LF/HF)</h2>
+          <div class="stats" style="grid-template-columns:repeat(3,1fr)">
+            <div class="stat"><div class="k" data-i18n="freq.ratio">LF/HF</div><div class="v" id="sdf-ratio" style="font-size:18px">—</div></div>
+            <div class="stat"><div class="k" data-i18n="freq.lfnu">LF n.u.</div><div class="v" id="sdf-lfnu" style="font-size:18px">—</div></div>
+            <div class="stat"><div class="k" data-i18n="freq.hfnu">HF n.u.</div><div class="v" id="sdf-hfnu" style="font-size:18px">—</div></div>
+          </div>
+          <div class="hint" id="sdf-note" style="margin-top:6px"></div>
+        </div>
+        <div class="chart"><h2 data-i18n="viz.spectrum">功率谱 PSD</h2><canvas id="sc-spectrum"></canvas></div>
+      </div>
+      <div class="charts" style="margin-top:14px">
+        <div class="chart">
+          <h2 data-i18n="viz.respcard">呼吸（体动 + RSA）</h2>
+          <div class="hint" id="sd-resp">—</div>
+          <canvas id="sc-resp"></canvas>
+        </div>
+        <div class="chart">
+          <h2 data-i18n="viz.autocard">自主神经状态（压力 ↔ 放松，参考）</h2>
+          <div class="hint" id="sd-auto">—</div>
+          <canvas id="sc-state2d"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MONITOR -->
+  <section id="view-monitor" class="hidden">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <strong data-i18n="mon.process">服务进程</strong>
+        <button class="danger" onclick="stopServer()" data-i18n="mon.stop">停止服务</button>
+      </div>
+      <p class="hint" data-i18n="mon.stopHint">停止后此网页会断开连接，需要重新双击启动器才能再次使用。</p>
+    </div>
+    <div class="panel">
+      <div class="stats">
+        <div class="stat"><div class="k" data-i18n="mon.state">服务状态</div><div class="v" id="m-state">—</div></div>
+        <div class="stat"><div class="k" data-i18n="mon.uptime">运行时长</div><div class="v" id="m-uptime">—</div></div>
+        <div class="stat"><div class="k" data-i18n="mon.serverTime">服务时间</div><div class="v" id="m-time" style="font-size:15px">—</div></div>
+        <div class="stat"><div class="k" data-i18n="mon.thread">采集线程</div><div class="v" id="m-thread">—</div></div>
+        <div class="stat"><div class="k" data-i18n="mon.age">最近样本（秒前）</div><div class="v" id="m-age">—</div></div>
+        <div class="stat"><div class="k" data-i18n="mon.error">最近错误</div><div class="v" id="m-error" style="font-size:14px;color:var(--bad)">—</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <strong data-i18n="mon.logTitle">运行日志</strong>
+        <button onclick="clearLogView()" data-i18n="mon.clearView">清空显示</button>
+      </div>
+      <div id="logView" style="margin-top:10px;max-height:340px;overflow:auto;font-family:Consolas,monospace;font-size:12px;line-height:1.6;"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const COLORS = { hr: "#b42318", ecg: "#1f6feb", temp: "#027a48", x: "#7f56d9", y: "#f79009", z: "#0ea5e9" };
+const MAX_KEEP_SEC = 600;   // 内存中最多保留 10 分钟数据
+const MAX_POINTS = 30000;   // 高采样率(波形)模式下的硬上限
+let liveData = [];          // [{t, hr, ecg, temp, x, y, z}]，t 为毫秒时间戳
+let winSec = 60;            // 实时图显示的时间窗（秒）
+let cursor = 0, collecting = false, sampleTimer = null;
+let lastTotal = 0, lastRateTs = 0;
+let trendHist = [], lastResp = null, lastAnalysis = { freq: {}, resp: {}, auto: {} };
+
+function $(id) { return document.getElementById(id); }
+
+// ---- i18n（语言文件在 web/i18n/*.json，缺失键回退英文）----
+let I18N = {}, I18N_BASE = {}, LANG = localStorage.getItem("mybeat_lang") || "zh";
+async function fetchLangFile(l) { try { return await (await fetch("/static/i18n/" + l + ".json")).json(); } catch (e) { return {}; } }
+async function loadLang(l) {
+  if (!Object.keys(I18N_BASE).length) I18N_BASE = await fetchLangFile("en");
+  const sel = (l === "en") ? I18N_BASE : await fetchLangFile(l);
+  I18N = Object.assign({}, I18N_BASE, sel);
+  LANG = l; try { localStorage.setItem("mybeat_lang", l); } catch (e) { }
+}
+function t(k) { return (k in I18N) ? I18N[k] : k; }
+function applyI18n() {
+  document.documentElement.lang = LANG;
+  document.title = t("app.title");
+  document.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.getAttribute("data-i18n")); });
+  document.querySelectorAll("[data-i18n-ph]").forEach(el => { el.placeholder = t(el.getAttribute("data-i18n-ph")); });
+  if (typeof VIZ !== "undefined") for (const m of VIZ) {
+    const p = document.getElementById("viz-" + m.id);
+    if (p) { const h = p.querySelector("h2"); if (h) h.textContent = t("viz." + m.id); }
+  }
+}
+async function setLang(l) {
+  await loadLang(l);
+  const sel = $("langSel"); if (sel) sel.value = l;
+  applyI18n();
+  if (typeof buildVizToggles === "function") buildVizToggles();
+  if (typeof renderViz === "function") renderViz();
+  if (typeof refreshEnv === "function") refreshEnv();
+  if (typeof pollStatus === "function") pollStatus();
+  if (typeof pollHealth === "function") pollHealth();
+  if (typeof lastSessionDetail !== "undefined" && lastSessionDetail && !$("sessionDetail").classList.contains("hidden")) renderSessionDetail(lastSessionDetail);
+  if (typeof refreshSessionList === "function") refreshSessionList();
+}
+
+function showTab(name) {
+  for (const t of ["live", "sessions", "monitor"]) {
+    $("tab-" + t).classList.toggle("active", name === t);
+    $("view-" + t).classList.toggle("hidden", name !== t);
+  }
+  if (name === "sessions") loadSessions();
+  if (name === "monitor") { pollHealth(); pollLogs(); }
+}
+
+function setMsg(text, isErr) {
+  const el = $("liveMsg");
+  el.textContent = text || "";
+  el.className = "msg" + (text ? " show" : "") + (isErr ? " err" : "");
+}
+
+// ---- chart -----------------------------------------------------------------
+function fmtClock(t) {
+  const d = new Date(t), p = n => String(n).padStart(2, "0");
+  return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+
+// 时间轴滚动图：横轴为真实时间，只画 [tStart, tEnd] 窗口内的点
+function drawTimeChart(canvas, keys, tStart, tEnd, refBand) {
+  const ctx = canvas.getContext("2d");
+  const scale = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width * scale));
+  const h = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const W = rect.width, H = rect.height;
+  const x0 = 36, x1 = W - 8, y0 = 8, y1 = H - 18;
+
+  const valOf = (d, k) => {
+    const v = d[k.key];
+    if (v == null || !Number.isFinite(v)) return null;
+    if (k.range && (v < k.range[0] || v > k.range[1])) return null;  // 超出合理范围当作缺口
+    return v;
+  };
+  const visible = liveData.filter(d => d.t >= tStart && d.t <= tEnd);
+  const all = [];
+  for (const k of keys) for (const d of visible) { const v = valOf(d, k); if (v != null) all.push(v); }
+
+  ctx.strokeStyle = "#e2e3df"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.lineTo(x1, y1); ctx.stroke();
+  if (!all.length) {
+    ctx.fillStyle = "#6a7077"; ctx.font = "12px Segoe UI, Arial";
+    ctx.fillText("暂无数据", x0 + 8, y0 + 18);
+    return;
+  }
+  let min = Math.min(...all), max = Math.max(...all);
+  if (min === max) { min -= 1; max += 1; }
+  const m = (max - min) * 0.08; min -= m; max += m;
+  const span = (max - min) || 1, tspan = (tEnd - tStart) || 1;
+  const xOf = t => x0 + ((t - tStart) / tspan) * (x1 - x0);
+  const yOf = v => y1 - ((v - min) / span) * (y1 - y0);
+
+  if (refBand) {
+    const lo = Math.max(refBand[0], min), hi = Math.min(refBand[1], max);
+    if (hi > lo) { ctx.fillStyle = "rgba(2,122,72,0.10)"; ctx.fillRect(x0, yOf(hi), x1 - x0, yOf(lo) - yOf(hi)); }
+  }
+
+  ctx.fillStyle = "#9aa0a6"; ctx.font = "10px Segoe UI, Arial"; ctx.textAlign = "center";
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const t = tStart + tspan * i / ticks, x = xOf(t);
+    ctx.strokeStyle = "#f0f1ee"; ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+    ctx.fillText(fmtClock(t), x, H - 5);
+  }
+  ctx.textAlign = "left";
+
+  for (const k of keys) {
+    ctx.strokeStyle = k.color; ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    let started = false;
+    for (const d of visible) {
+      const v = valOf(d, k);
+      if (v == null) { started = false; continue; }
+      const x = xOf(d.t), y = yOf(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#6a7077"; ctx.font = "10px Segoe UI, Arial";
+  ctx.fillText(max.toFixed(1), 2, y0 + 8);
+  ctx.fillText(min.toFixed(1), 2, y1);
+}
+
+function onWinChange() { winSec = Number($("winSec").value) || 60; drawLive(); }
+
+// ---- index-based chart (for static session overview) -----------------------
+function drawSeriesChart(canvas, seriesList) {
+  const ctx = canvas.getContext("2d");
+  const scale = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width * scale));
+  const h = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const pad = 26;
+
+  const all = [];
+  for (const s of seriesList) for (const v of s.values) if (v !== null && Number.isFinite(v)) all.push(v);
+  ctx.strokeStyle = "#e2e3df"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad, 8); ctx.lineTo(pad, rect.height - pad); ctx.lineTo(rect.width - 6, rect.height - pad);
+  ctx.stroke();
+  if (!all.length) {
+    ctx.fillStyle = "#6a7077"; ctx.font = "12px Segoe UI, Arial";
+    ctx.fillText("暂无数据", pad + 8, 26);
+    return;
+  }
+  let min = Math.min(...all), max = Math.max(...all);
+  if (min === max) { min -= 1; max += 1; }
+  const span = max - min;
+  const px = (i, n) => pad + (n <= 1 ? 0 : (i / (n - 1)) * (rect.width - pad - 8));
+  const py = (v) => (rect.height - pad) - ((v - min) / span) * (rect.height - pad - 10);
+
+  for (const s of seriesList) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    let started = false;
+    s.values.forEach((v, i) => {
+      if (v === null || !Number.isFinite(v)) { started = false; return; }
+      const x = px(i, s.values.length), y = py(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#6a7077"; ctx.font = "11px Segoe UI, Arial";
+  ctx.fillText(max.toFixed(1), 2, 14);
+  ctx.fillText(min.toFixed(1), 2, rect.height - pad);
+}
+
+const HR_MIN = 40, HR_MAX = 160;   // 合理心率窗口（用于干净曲线/信号质量/HRV）
+
+function median(a) {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function computeLiveMetrics(tStart, tEnd) {
+  const win = liveData.filter(d => d.t >= tStart && d.t <= tEnd);
+  let total = 0, ok = 0;
+  const recentCut = tEnd - 15000, recentHR = [], rri = [], mags = [];
+  let lastPkt = null;
+  for (const d of win) {
+    if (d.hr != null && Number.isFinite(d.hr)) {
+      total++;
+      if (d.hr >= HR_MIN && d.hr <= HR_MAX && d.t >= recentCut) recentHR.push(d.hr);
+    }
+    // 每拍一个 RRI：1拍1发(sf=0)时同包多行只取一次；3拍1发(sf=1)每行即一拍
+    if (d.ecg != null && d.ecg >= 333 && d.ecg <= 1500) {
+      if (d.sf === 0) { if (d.pkt !== lastPkt) { rri.push(d.ecg); lastPkt = d.pkt; } }
+      else { rri.push(d.ecg); lastPkt = d.pkt; }
+    }
+    if (d.x != null && d.y != null && d.z != null) mags.push(Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z));
+  }
+  let sdnn = null, rmssd = null, meanRri = null, pnn = null;
+  if (rri.length >= 2) {
+    meanRri = rri.reduce((a, b) => a + b, 0) / rri.length;
+    sdnn = Math.sqrt(rri.reduce((a, b) => a + (b - meanRri) * (b - meanRri), 0) / rri.length);
+    const ad = []; let s = 0;
+    for (let i = 1; i < rri.length; i++) { const dd = Math.abs(rri[i] - rri[i - 1]); ad.push(dd); s += dd * dd; }
+    rmssd = Math.sqrt(s / ad.length);
+    const pct = th => 100 * ad.filter(d => d > th).length / ad.length;
+    pnn = { p10: pct(10), p20: pct(20), p30: pct(30), p40: pct(40), p50: pct(50) };
+  }
+  let motion = null;
+  if (mags.length >= 2) {
+    const mm = mags.reduce((a, b) => a + b, 0) / mags.length;
+    motion = Math.sqrt(mags.reduce((a, b) => a + (b - mm) * (b - mm), 0) / mags.length);
+  }
+  return { quality: total ? ok / total : null, cleanHR: median(recentHR), rri, sdnn, rmssd, meanRri, motion, pnn };
+}
+
+function drawPoincare(canvas, rri) {
+  const ctx = canvas.getContext("2d");
+  const scale = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width * scale)), h = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const pad = 30, W = rect.width, H = rect.height;
+  ctx.strokeStyle = "#e2e3df"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, 8); ctx.lineTo(pad, H - pad); ctx.lineTo(W - 8, H - pad); ctx.stroke();
+  if (rri.length < 2) { ctx.fillStyle = "#6a7077"; ctx.font = "12px Segoe UI, Arial"; ctx.fillText("数据不足", pad + 8, 26); return; }
+  let mn = Math.min(...rri), mx = Math.max(...rri);
+  if (mn === mx) { mn -= 50; mx += 50; }
+  const sp = mx - mn;
+  const xOf = v => pad + ((v - mn) / sp) * (W - pad - 8);
+  const yOf = v => (H - pad) - ((v - mn) / sp) * (H - pad - 8);
+  ctx.strokeStyle = "#d8d8d2"; ctx.beginPath(); ctx.moveTo(xOf(mn), yOf(mn)); ctx.lineTo(xOf(mx), yOf(mx)); ctx.stroke();
+  ctx.fillStyle = "rgba(31,111,235,0.55)";
+  for (let i = 1; i < rri.length; i++) { ctx.beginPath(); ctx.arc(xOf(rri[i - 1]), yOf(rri[i]), 2.5, 0, Math.PI * 2); ctx.fill(); }
+  ctx.fillStyle = "#9aa0a6"; ctx.font = "10px Segoe UI, Arial";
+  ctx.fillText(mn.toFixed(0) + "ms", pad, H - pad + 12);
+  ctx.fillText(mx.toFixed(0) + "ms", W - 42, H - pad + 12);
+}
+
+function drawSpectrum(canvas, freqs, power) {
+  const ctx = canvas.getContext("2d");
+  const scale = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width * scale)), h = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const pad = 30, W = rect.width, H = rect.height, x0 = pad, x1 = W - 8, y0 = 8, y1 = H - pad;
+  const fmax = 0.4, xOf = f => x0 + (f / fmax) * (x1 - x0);
+  for (const [lo, hi, col] of [[0.04, 0.15, "rgba(31,111,235,0.12)"], [0.15, 0.40, "rgba(181,71,8,0.12)"]]) {
+    ctx.fillStyle = col; ctx.fillRect(xOf(lo), y0, xOf(hi) - xOf(lo), y1 - y0);
+  }
+  ctx.strokeStyle = "#e2e3df"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.lineTo(x1, y1); ctx.stroke();
+  if (!freqs || !freqs.length) { ctx.fillStyle = "#6a7077"; ctx.font = "12px Segoe UI, Arial"; ctx.fillText("暂无数据", x0 + 8, 26); return; }
+  let pmax = Math.max(...power); if (!(pmax > 0)) pmax = 1;
+  const yOf = p => y1 - (p / pmax) * (y1 - y0);
+  ctx.strokeStyle = "#1f2428"; ctx.lineWidth = 1.4; ctx.beginPath();
+  freqs.forEach((f, i) => { const x = xOf(f), y = yOf(power[i]); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+  ctx.fillStyle = "#9aa0a6"; ctx.font = "10px Segoe UI, Arial"; ctx.textAlign = "center";
+  for (const f of [0, 0.1, 0.2, 0.3, 0.4]) ctx.fillText(f.toFixed(2), xOf(f), H - 6);
+  ctx.textAlign = "left"; ctx.fillText("Hz", x1 - 16, H - 6);
+}
+
+function renderFreq(r, idRatio, idLf, idHf, idNote, canvasId) {
+  const ok = r && r.ok;
+  $(idRatio).textContent = ok && r.lf_hf != null ? r.lf_hf.toFixed(2) : "—";
+  $(idLf).textContent = ok && r.lf_nu != null ? r.lf_nu.toFixed(0) : "—";
+  $(idHf).textContent = ok && r.hf_nu != null ? r.hf_nu.toFixed(0) : "—";
+  if ($(idNote)) {
+    $(idNote).textContent = ok
+      ? ((r.reliable ? "" : "⚠ 时长不足 60s，仅供参考；") + "基于 " + r.n + " 个心拍 / " + (r.duration_s || 0).toFixed(0) + "s，功率为相对单位")
+      : (r ? (r.note || "数据不足") : "数据不足");
+  }
+  drawSpectrum($(canvasId), ok ? r.freqs : [], ok ? r.power : []);
+}
+
+// ---- respiration / autonomic-state drawing ---------------------------------
+function drawRespWave(canvas, ts, vs) {
+  const ctx = canvas.getContext("2d");
+  const scale = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width * scale)), h = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const W = rect.width, H = rect.height, pad = 6;
+  if (!vs || vs.length < 2) { ctx.fillStyle = "#6a7077"; ctx.font = "12px Segoe UI, Arial"; ctx.fillText("暂无数据", 10, 20); return; }
+  let mn = Math.min(...vs), mx = Math.max(...vs); if (mn === mx) { mn -= 1; mx += 1; }
+  const t0 = ts[0], t1 = ts[ts.length - 1], tspan = (t1 - t0) || 1;
+  const xOf = t => pad + ((t - t0) / tspan) * (W - 2 * pad);
+  const yOf = v => (H - pad) - ((v - mn) / (mx - mn)) * (H - 2 * pad);
+  ctx.strokeStyle = "#1f6feb"; ctx.lineWidth = 1.4; ctx.beginPath();
+  vs.forEach((v, i) => { const x = xOf(ts[i]), y = yOf(v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+}
+
+function drawState2D(canvas, arousal, relax, trail) {
+  const ctx = canvas.getContext("2d");
+  const scale = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width * scale)), h = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const W = rect.width, H = rect.height, pad = 22;
+  const xOf = a => pad + (a / 100) * (W - 2 * pad);          // arousal →
+  const yOf = r => (H - pad) - (r / 100) * (H - 2 * pad);    // relax ↑
+  // quadrant tints
+  const mx = xOf(50), my = yOf(50);
+  ctx.fillStyle = "rgba(2,122,72,0.08)"; ctx.fillRect(pad, pad, mx - pad, my - pad);          // top-left 放松
+  ctx.fillStyle = "rgba(180,35,24,0.08)"; ctx.fillRect(mx, my, W - pad - mx, H - pad - my);   // bottom-right 压力
+  ctx.strokeStyle = "#e2e3df"; ctx.lineWidth = 1;
+  ctx.strokeRect(pad, pad, W - 2 * pad, H - 2 * pad);
+  ctx.beginPath(); ctx.moveTo(mx, pad); ctx.lineTo(mx, H - pad); ctx.moveTo(pad, my); ctx.lineTo(W - pad, my); ctx.stroke();
+  ctx.fillStyle = "#9aa0a6"; ctx.font = "10px Segoe UI, Arial";
+  ctx.fillText("放松", pad + 4, pad + 12); ctx.textAlign = "right"; ctx.fillText("压力", W - pad - 4, H - pad - 4); ctx.textAlign = "left";
+  ctx.fillText("唤醒 →", W - pad - 44, my - 4); ctx.save(); ctx.translate(pad - 8, pad + 30); ctx.rotate(-Math.PI / 2); ctx.fillText("放松 →", 0, 0); ctx.restore();
+  if (trail && trail.length) {
+    ctx.strokeStyle = "rgba(127,86,217,0.35)"; ctx.lineWidth = 1; ctx.beginPath();
+    trail.forEach((p, i) => { if (p.arousal == null) return; const x = xOf(p.arousal), y = yOf(p.relax); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+    ctx.stroke();
+  }
+  if (arousal != null && relax != null) {
+    ctx.fillStyle = "#7f56d9"; ctx.beginPath(); ctx.arc(xOf(arousal), yOf(relax), 5, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawTrend(canvas, hist) {
+  const ctx = canvas.getContext("2d");
+  const scale = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width * scale)), h = Math.max(1, Math.floor(rect.height * scale));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const W = rect.width, H = rect.height, pad = 22;
+  ctx.strokeStyle = "#e2e3df"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, pad); ctx.lineTo(pad, H - pad); ctx.lineTo(W - 6, H - pad); ctx.stroke();
+  if (!hist || hist.length < 2) { ctx.fillStyle = "#6a7077"; ctx.font = "12px Segoe UI, Arial"; ctx.fillText("积累中…", pad + 8, 22); return; }
+  const n = hist.length;
+  const xOf = i => pad + (i / (n - 1)) * (W - pad - 6);
+  const yOf = v => (H - pad) - (Math.max(0, Math.min(100, v)) / 100) * (H - 2 * pad);
+  const line = (key, color, map) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 1.4; ctx.beginPath(); let started = false;
+    hist.forEach((p, i) => { const raw = p[key]; if (raw == null) { started = false; return; } const v = map ? map(raw) : raw; const x = xOf(i), y = yOf(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); });
+    ctx.stroke();
+  };
+  line("relax", "#027a48");
+  line("arousal", "#b42318");
+  line("resp", "#1f6feb", v => v * 2.5);  // 呼吸率 0-40 映射到 0-100
+}
+
+function fmtN(v, d) { return (v != null && Number.isFinite(v)) ? v.toFixed(d) : "—"; }
+function statRow(items) {
+  return '<div class="stats" style="grid-template-columns:repeat(' + items.length + ',1fr)">' +
+    items.map(it => `<div class="stat"><div class="k">${it[0]}</div><div class="v" style="font-size:18px">${it[1]}</div></div>`).join("") + '</div>';
+}
+function ensureCanvas(host, h) {
+  let c = host.querySelector("canvas");
+  if (!c) { c = document.createElement("canvas"); if (h) c.style.height = h; host.appendChild(c); }
+  return c;
+}
+
+// ---- 可视化模块注册表：加新图只需往 VIZ 加一项 {id,title,on,wide?,draw(host,ctx)} ----
+const VIZ = [
+  { id: "hr", title: "心率 HR (bpm)", on: true,
+    draw(h, c) { drawTimeChart(ensureCanvas(h), [{ key: "hr", color: COLORS.hr, range: [HR_MIN, HR_MAX] }], c.tStart, c.tEnd, [60, 100]); } },
+  { id: "ecg", title: "ECG / RRI 原始值", on: true,
+    draw(h, c) { drawTimeChart(ensureCanvas(h), [{ key: "ecg", color: COLORS.ecg }], c.tStart, c.tEnd); } },
+  { id: "temp", title: "温度 (℃)", on: true,
+    draw(h, c) { drawTimeChart(ensureCanvas(h), [{ key: "temp", color: COLORS.temp }], c.tStart, c.tEnd); } },
+  { id: "acc", title: "加速度 X / Y / Z", on: true,
+    draw(h, c) { drawTimeChart(ensureCanvas(h), [{ key: "x", color: COLORS.x }, { key: "y", color: COLORS.y }, { key: "z", color: COLORS.z }], c.tStart, c.tEnd); } },
+  { id: "hrvcard", title: "HRV 指标", on: true,
+    draw(h, c) {
+      const m = c.metrics, p = m.pnn;
+      h.innerHTML = statRow([[t("hrv.meanRri"), fmtN(m.meanRri, 0)], [t("hrv.sdnn"), fmtN(m.sdnn, 1)], [t("hrv.rmssd"), fmtN(m.rmssd, 1)], [t("hrv.usable"), m.rri.length]]) +
+        `<div class="hint" style="margin-top:8px">${p ? `pNN10/20/30/40/50: ${p.p10.toFixed(0)}/${p.p20.toFixed(0)}/${p.p30.toFixed(0)}/${p.p40.toFixed(0)}/${p.p50.toFixed(0)} %` : "pNN: " + t("hrv.insufficient")}</div>`;
+    } },
+  { id: "poincare", title: "Poincaré 图（RRI[n] vs RRI[n+1]）", on: true,
+    draw(h, c) { drawPoincare(ensureCanvas(h), c.metrics.rri); } },
+  { id: "freqcard", title: "频域 HRV (LF/HF)", on: false,
+    draw(h, c) {
+      const f = c.freq;
+      h.innerHTML = statRow([[t("freq.ratio"), fmtN(f.lf_hf, 2)], [t("freq.lfnu"), fmtN(f.lf_nu, 0)], [t("freq.hfnu"), fmtN(f.hf_nu, 0)]]) +
+        `<div class="hint" style="margin-top:6px">${f.ok ? ("n=" + f.n + " / " + (f.duration_s || 0).toFixed(0) + "s" + (f.reliable ? "" : " ⚠<60s")) : (f.note || t("hrv.insufficient"))}</div>`;
+    } },
+  { id: "spectrum", title: "功率谱 PSD（LF/HF 频段）", on: false,
+    draw(h, c) { drawSpectrum(ensureCanvas(h), c.freq.ok ? c.freq.freqs : [], c.freq.ok ? c.freq.power : []); } },
+  { id: "respcard", title: "呼吸率（体动 + RSA）", on: false,
+    draw(h, c) {
+      const rp = c.resp;
+      h.innerHTML = statRow([[t("resp.bpm"), fmtN(rp.resp_bpm, 1)], [t("resp.accel"), fmtN(rp.resp_accel_bpm, 1)], [t("resp.rsa"), fmtN(rp.resp_rsa_bpm, 1)]]) +
+        `<div class="hint" style="margin-top:6px">${rp.ok ? ((rp.agree ? t("resp.agree") : t("resp.disagree")) + " · " + t("resp.axis") + "=" + (rp.accel_axis || "-")) : (rp.note || t("hrv.insufficient"))}</div>`;
+    } },
+  { id: "resp", title: "呼吸波形", on: false,
+    draw(h, c) { drawRespWave(ensureCanvas(h, "120px"), c.resp.ok ? c.resp.wave_t : [], c.resp.ok ? c.resp.wave_v : []); } },
+  { id: "autocard", title: "自主神经状态（压力↔放松，参考）", on: false,
+    draw(h, c) {
+      const a = c.auto;
+      h.innerHTML = statRow([[t("auto.state"), a.ok ? t("state." + (a.state_code || "unknown")) : "—"], [t("auto.relax"), fmtN(a.relax_score, 0)], [t("auto.arousal"), fmtN(a.arousal_score, 0)]]) +
+        `<div class="hint" style="margin-top:6px">${a.ok ? ("SI=" + fmtN(a.stress_index, 0) + " RMSSD=" + fmtN(a.rmssd_ms, 0) + " LF/HF=" + fmtN(a.lf_hf, 2) + " · " + t("auto.disclaimer")) : (a.note || t("hrv.insufficient"))}</div>`;
+    } },
+  { id: "state2d", title: "自主神经二维图（唤醒×放松，参考）", on: false,
+    draw(h, c) { drawState2D(ensureCanvas(h, "180px"), c.auto.ok ? c.auto.arousal_score : null, c.auto.ok ? c.auto.relax_score : null, trendHist); } },
+  { id: "trend", title: "状态时间趋势（放松/唤醒/呼吸）", on: false, wide: true,
+    draw(h, c) { drawTrend(ensureCanvas(h, "160px"), trendHist); } },
+  { id: "datalog", title: "原始数据日志", on: true, wide: true,
+    mount(h) {
+      h.innerHTML = `<div class="row" style="justify-content:flex-end;gap:10px">
+        <label class="check"><input type="checkbox" id="dataLogOn" checked> ${t("datalog.record")}</label>
+        <button onclick="clearDataLog()">${t("datalog.clear")}</button></div>
+        <div id="dataLog" style="margin-top:6px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;line-height:1.5"></div>`;
+    } },
+];
+
+const vizState = loadVizState();
+function loadVizState() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("mybeat_viz") || "{}"); } catch (e) { }
+  const st = {};
+  for (const m of VIZ) st[m.id] = (m.id in saved) ? !!saved[m.id] : m.on;
+  return st;
+}
+function saveVizState() { try { localStorage.setItem("mybeat_viz", JSON.stringify(vizState)); } catch (e) { } }
+
+function buildVizToggles() {
+  const box = $("vizToggles"); box.innerHTML = "";
+  for (const m of VIZ) {
+    const lbl = document.createElement("label"); lbl.className = "check";
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = vizState[m.id];
+    cb.onchange = () => { vizState[m.id] = cb.checked; saveVizState(); syncVizPanels(); };
+    lbl.appendChild(cb); lbl.appendChild(document.createTextNode(" " + t("viz." + m.id)));
+    box.appendChild(lbl);
+  }
+}
+
+function syncVizPanels() {
+  const grid = $("vizGrid");
+  for (const m of VIZ) {
+    let panel = document.getElementById("viz-" + m.id);
+    if (vizState[m.id] && !panel) {
+      panel = document.createElement("div");
+      panel.className = "chart panel" + (m.wide ? " viz-full" : "");
+      panel.id = "viz-" + m.id;
+      const h2 = document.createElement("h2"); h2.textContent = t("viz." + m.id); panel.appendChild(h2);
+      const body = document.createElement("div"); body.className = "viz-body"; panel.appendChild(body);
+      const after = VIZ.slice(VIZ.indexOf(m) + 1).map(x => document.getElementById("viz-" + x.id)).find(Boolean);
+      grid.insertBefore(panel, after || null);
+      if (m.mount) m.mount(body);
+    } else if (!vizState[m.id] && panel) {
+      panel.remove();
+    }
+  }
+  renderViz();
+}
+
+function buildCtx() {
+  const last = liveData.length ? liveData[liveData.length - 1].t : Date.now();
+  const tEnd = collecting ? Math.max(last, Date.now()) : last;  // 采集中按真实时间滚动
+  const tStart = tEnd - winSec * 1000;
+  return { tStart, tEnd, metrics: computeLiveMetrics(tStart, tEnd),
+    freq: lastAnalysis.freq || {}, resp: lastAnalysis.resp || {}, auto: lastAnalysis.auto || {} };
+}
+
+function updateStatusStrip(m) {
+  $("s-hr").textContent = fmtN(m.cleanHR, 0);
+  const q = $("s-quality");
+  if (m.quality == null) { q.textContent = "—"; q.style.color = ""; }
+  else { q.textContent = Math.round(m.quality * 100) + "%"; q.style.color = m.quality >= 0.8 ? "var(--ok)" : (m.quality >= 0.6 ? "var(--warn)" : "var(--bad)"); }
+  $("s-motion").textContent = m.motion == null ? "—" : ((m.motion < 0.03 ? t("motion.still") : (m.motion < 0.1 ? t("motion.light") : t("motion.strong"))) + " (" + m.motion.toFixed(2) + ")");
+}
+
+function renderViz() {
+  const ctx = buildCtx();
+  updateStatusStrip(ctx.metrics);
+  for (const m of VIZ) {
+    if (!vizState[m.id] || !m.draw) continue;
+    const panel = document.getElementById("viz-" + m.id);
+    if (!panel) continue;
+    try { m.draw(panel.querySelector(".viz-body"), ctx); } catch (e) { /* 单个图出错不影响其它 */ }
+  }
+}
+
+function drawLive() { renderViz(); }  // 兼容旧调用名
+
+async function updateAnalysisLive() {
+  if (!collecting) return;
+  try {
+    const r = await (await fetch("/api/analysis?window=180")).json();
+    lastAnalysis = { freq: r.freq_hrv || {}, resp: r.respiration || {}, auto: r.autonomic || {} };
+    const a = lastAnalysis.auto, rp = lastAnalysis.resp;
+    if (a && a.ok && a.arousal_score != null) {
+      trendHist.push({ relax: a.relax_score, arousal: a.arousal_score, resp: (rp && rp.ok) ? rp.resp_bpm : null });
+      if (trendHist.length > 240) trendHist.shift();
+    }
+    renderViz();
+  } catch (e) { /* ignore */ }
+}
+
+// ---- status + samples ------------------------------------------------------
+async function refreshEnv() {
+  try {
+    const env = await (await fetch("/api/environment")).json();
+    const py = $("b-python");
+    py.textContent = "Python " + (env.python_arch || "?");
+    py.className = "badge ok";
+    const dll = $("b-dll");
+    if (env.dll_loaded) { dll.textContent = "DLL " + (env.dll_arch || ""); dll.className = "badge ok"; }
+    else { dll.textContent = t("badge.dllUnloaded"); dll.className = "badge bad"; }
+  } catch (e) { /* ignore */ }
+}
+
+async function refreshProbe() {
+  try {
+    const p = await (await fetch("/api/probe")).json();
+    const b = $("b-addr");
+    if (p.address) { b.textContent = "RRD-1 " + p.address; b.className = "badge ok"; }
+    else { b.textContent = "设备未就绪"; b.className = "badge bad"; }
+  } catch (e) { /* ignore */ }
+}
+
+let online = true;
+let logCursor = 0;
+
+function setOnline(ok) {
+  online = ok;
+  $("offlineBanner").style.display = ok ? "none" : "block";
+  const b = $("b-server");
+  b.textContent = ok ? t("badge.serverOnline") : t("badge.serverOffline");
+  b.className = "badge " + (ok ? "ok" : "bad");
+}
+
+function fmtUptime(sec) {
+  sec = Math.floor(sec || 0);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return (h ? h + "h " : "") + (h || m ? m + "m " : "") + s + "s";
+}
+
+async function pollHealth() {
+  try {
+    const h = await (await fetch("/api/health")).json();
+    setOnline(true);
+    $("m-state").textContent = h.collecting ? t("badge.collecting") : t("badge.idle");
+    $("m-uptime").textContent = fmtUptime(h.uptime_s);
+    $("m-time").textContent = (h.server_time || "").replace("T", " ");
+    $("m-thread").textContent = h.collecting ? (h.thread_alive ? "✓" : "✗") : "—";
+    $("m-age").textContent = h.last_sample_age_s != null ? h.last_sample_age_s.toFixed(1) : "—";
+    $("m-error").textContent = h.last_error || t("mon.none");
+    $("m-error").style.color = h.last_error ? "var(--bad)" : "var(--muted)";
+  } catch (e) { setOnline(false); }
+}
+
+async function pollLogs() {
+  try {
+    const r = await (await fetch("/api/logs?since=" + logCursor)).json();
+    logCursor = r.next;
+    const view = $("logView");
+    const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 10;
+    for (const e of (r.logs || [])) {
+      const line = document.createElement("div");
+      const color = e.level === "error" ? "var(--bad)" : "var(--ink)";
+      line.innerHTML = `<span style="color:var(--muted)">${e.time}</span> ` +
+        `<span style="color:${color}">[${e.level}]</span> ${e.msg}`;
+      view.appendChild(line);
+    }
+    while (view.childElementCount > 400) view.removeChild(view.firstChild);
+    if (atBottom) view.scrollTop = view.scrollHeight;
+  } catch (e) { /* offline handled by health */ }
+}
+
+function clearLogView() { $("logView").innerHTML = ""; }
+
+async function stopServer() {
+  if (!confirm("确定要停止本地服务吗？停止后网页将断开，需要重新启动服务。")) return;
+  try { await fetch("/api/shutdown", { method: "POST" }); } catch (e) { /* connection drops as it stops */ }
+  setOnline(false);
+  $("offlineBanner").textContent = t("offline.stopped");
+  $("offlineBanner").style.display = "block";
+}
+
+async function pollStatus() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    setOnline(true);
+    collecting = s.collecting;
+    $("btnStop").disabled = !collecting;
+    updateStartGate();
+    const st = $("b-state");
+    st.textContent = collecting ? t("badge.collecting") : t("badge.idle");
+    st.className = "badge " + (collecting ? "live" : "");
+    $("s-total").textContent = s.total ?? 0;
+    $("s-elapsed").textContent = s.elapsed != null ? s.elapsed.toFixed(0) : "0";
+    if (s.address) { $("b-addr").textContent = "RRD-1 " + s.address; $("b-addr").className = "badge ok"; }
+    if (s.last) {
+      $("s-temp").textContent = s.last.temp_c != null ? s.last.temp_c.toFixed(1) : "—";
+    }
+    $("s-batt").textContent = s.lowbattery ? "是 ⚠" : "正常";
+    if (s.error) setMsg("采集线程报错：" + s.error, true);
+    if (collecting && !sampleTimer) startSamplePump();
+    if (!collecting && sampleTimer) { clearInterval(sampleTimer); sampleTimer = null; }
+    if (prevCollecting && !collecting && autoRecActive) { endRecording(); autoRecActive = false; }
+    prevCollecting = collecting;
+  } catch (e) { setOnline(false); }
+}
+
+async function pumpSamples() {
+  try {
+    const r = await (await fetch("/api/samples?since=" + cursor)).json();
+    cursor = r.next;
+    for (const s of r.samples) {
+      const t = Date.parse(s.host_time);
+      liveData.push({ t: Number.isFinite(t) ? t : Date.now(),
+        hr: s.hr_bpm, ecg: s.ecg_raw, temp: s.temp_c, x: s.acc_x, y: s.acc_y, z: s.acc_z,
+        pkt: s.packet_id, sf: s.sampling_freq });
+    }
+    // 按时间和数量裁剪，内存有界
+    const cutoff = (liveData.length ? liveData[liveData.length - 1].t : Date.now()) - MAX_KEEP_SEC * 1000;
+    while (liveData.length && (liveData[0].t < cutoff || liveData.length > MAX_POINTS)) liveData.shift();
+    appendDataLog(r.samples);
+    drawLive();  // 每个轮询周期重绘，实现平滑滚动
+    // rate
+    const now = performance.now();
+    if (lastRateTs) {
+      const dt = (now - lastRateTs) / 1000;
+      const total = Number($("s-total").textContent) || 0;
+      const rate = (total - lastTotal) / Math.max(dt, 0.001);
+      $("s-rate").textContent = rate.toFixed(1);
+      lastTotal = total;
+    }
+    lastRateTs = now;
+  } catch (e) { /* ignore */ }
+}
+
+function fmtA(v) { return v != null && Number.isFinite(v) ? v.toFixed(2) : "—"; }
+
+function appendDataLog(samples) {
+  const toggle = $("dataLogOn"), view = $("dataLog");
+  if (!toggle || !view || !toggle.checked || !samples || !samples.length) return;
+  const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 12;
+  for (const s of samples) {
+    const t = (s.host_time || "").substring(11, 23);
+    const hr = s.hr_bpm != null ? s.hr_bpm.toFixed(0) : "—";
+    const temp = s.temp_c != null ? s.temp_c.toFixed(1) : "—";
+    const line = document.createElement("div");
+    line.textContent = `${t}  #${s.packet_id}[${s.sample_index}]  ${s.ecg_mode_label}=${s.ecg_raw}  HR=${hr}  T=${temp}  acc(${fmtA(s.acc_x)},${fmtA(s.acc_y)},${fmtA(s.acc_z)})${s.lowbattery ? "  ⚠低电" : ""}`;
+    view.appendChild(line);
+  }
+  while (view.childElementCount > 400) view.removeChild(view.firstChild);
+  if (atBottom) view.scrollTop = view.scrollHeight;
+}
+
+function clearDataLog() { const v = $("dataLog"); if (v) v.innerHTML = ""; }
+
+function startSamplePump() {
+  cursor = 0;
+  liveData = [];
+  trendHist = []; lastResp = null;
+  lastTotal = 0; lastRateTs = 0;
+  drawLive();
+  sampleTimer = setInterval(pumpSamples, 150);
+}
+
+// ---- camera ----------------------------------------------------------------
+let camStream = null, mediaRecorder = null, recChunks = [], recording = false;
+let autoRecActive = false, currentVideoName = null, prevCollecting = false;
+
+function camMsg(t, err) {
+  const e = $("camMsg"); e.textContent = t || "";
+  e.className = "msg" + (t ? " show" : "") + (err ? " err" : "");
+}
+
+async function toggleCamera() {
+  if (camStream) {
+    camStream.getTracks().forEach(t => t.stop());
+    camStream = null;
+    const v = $("camVideo"); v.srcObject = null; v.style.display = "none";
+    $("btnCam").textContent = t("cam.open"); camMsg(""); updateStartGate();
+    return;
+  }
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    const v = $("camVideo"); v.srcObject = camStream; v.style.display = "block";
+    $("btnCam").textContent = t("cam.close"); camMsg(""); updateStartGate();
+  } catch (e) { camMsg("无法打开摄像头：" + e.message + "（请允许浏览器摄像头权限）", true); }
+}
+
+function pickMime() {
+  const c = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+  for (const m of c) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  return "";
+}
+
+function beginRecording(name) {
+  if (!camStream || recording) return;
+  currentVideoName = (name || ("video_" + Date.now())).replace(/\.csv$/i, "") + ".webm";
+  recChunks = [];
+  const mime = pickMime();
+  mediaRecorder = new MediaRecorder(camStream, mime ? { mimeType: mime } : undefined);
+  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data); };
+  mediaRecorder.onstop = uploadRecording;
+  mediaRecorder.start();
+  recording = true;
+  $("recBadge").textContent = t("cam.recording"); $("recBadge").className = "badge live";
+}
+
+function endRecording() {
+  if (!recording || !mediaRecorder) return;
+  recording = false; mediaRecorder.stop();
+  $("recBadge").textContent = t("cam.saving"); $("recBadge").className = "badge";
+}
+
+async function uploadRecording() {
+  const blob = new Blob(recChunks, { type: "video/webm" });
+  recChunks = [];
+  try {
+    const r = await fetch("/api/upload-video?name=" + encodeURIComponent(currentVideoName), { method: "POST", body: blob });
+    const j = await r.json();
+    if (j.error) { camMsg("save failed: " + j.error, true); $("recBadge").textContent = t("cam.notRec"); }
+    else { camMsg(t("cam.saved") + ": " + j.saved + " (" + Math.round(j.size / 1024) + " KB)"); $("recBadge").textContent = t("cam.saved"); }
+  } catch (e) { camMsg("upload failed: " + e.message, true); $("recBadge").textContent = t("cam.notRec"); }
+}
+
+// ---- pairing ---------------------------------------------------------------
+let paired = false;
+
+function pairMsg(t, err) {
+  const e = $("pairMsg"); e.textContent = t || "";
+  e.className = "msg" + (t ? " show" : "") + (err ? " err" : "");
+}
+
+function ecgLabelCN(l) {
+  return ({ waveform: "心拍波形", rri: "心拍间隔 RRI · 普通(3拍1发)", rri_acc_1s: "心拍间隔 RRI · 低延迟(1拍1发)", heart_rate: "心拍数" })[l] || l || "—";
+}
+
+function setPaired(ok) { paired = ok; updateStartGate(); }
+
+function updateStartGate() {
+  const needCam = $("autoRecord").checked && !camStream;
+  $("btnStart").disabled = collecting || !paired || needCam;
+  let hint;
+  if (collecting) hint = t("cap.hintCollecting");
+  else if (!paired) hint = t("cap.hintPair");
+  else if (needCam) hint = t("cap.hintCam");
+  else hint = t("cap.hintReady");
+  $("startHint").textContent = hint;
+}
+
+function onAutoRecordToggle() {
+  $("camBox").style.display = $("autoRecord").checked ? "block" : "none";
+  updateStartGate();
+}
+
+function renderDeviceInfo(r) {
+  if (r.collecting) { pairMsg("采集进行中，无法读取/配对。", true); return; }
+  const rrd = r.rrd_address;
+  $("di-rrd").textContent = rrd || (r.rrd_error ? "读取失败：" + r.rrd_error : "—");
+  if (rrd) { $("b-addr").textContent = "RRD-1 " + rrd; $("b-addr").className = "badge ok"; }
+  $("di-count").textContent = (r.whs_count != null) ? r.whs_count : "—";
+  const w = r.whs;
+  if (w) {
+    $("di-ver").textContent = (w.version != null ? w.version : "—") + " / " + w.serial_id;
+    $("di-cpu").textContent = w.cpu_id;
+    $("di-mode").textContent = w.mode_label === "wireless" ? "无线" : (w.mode_label === "memory" ? "存储" : w.mode);
+    $("di-ecg").textContent = ecgLabelCN(w.ecg_mode_label);
+    $("di-dest").textContent = w.destination || "—";
+  } else {
+    for (const id of ["di-ver", "di-cpu", "di-mode", "di-ecg", "di-dest"]) $(id).textContent = "—";
+  }
+  // 匹配判定：USB 上能读到传感器则以实际为准；USB 已拔出则信任上次配对记录
+  let ok;
+  if (w && rrd) {
+    ok = !!r.matches;
+    if (ok) localStorage.setItem("mybeat_paired_rrd", rrd); else localStorage.removeItem("mybeat_paired_rrd");
+  } else if (rrd && localStorage.getItem("mybeat_paired_rrd") === rrd) {
+    ok = true;
+  } else {
+    ok = false;
+  }
+  const dm = $("di-match"); dm.textContent = (ok ? "✓ " : "✗ ") + t(ok ? "pair.matched" : "pair.unmatched"); dm.style.color = ok ? "var(--ok)" : "var(--bad)";
+  const pb = $("pairBadge"); pb.textContent = t(ok ? "pair.matched" : "pair.unmatched"); pb.className = "badge " + (ok ? "ok" : "bad");
+  setPaired(ok);
+}
+
+async function readDevices() {
+  pairMsg("读取设备中…");
+  try {
+    const r = await (await fetch("/api/device-info")).json();
+    renderDeviceInfo(r);
+    if (!r.collecting) pairMsg(paired ? "已匹配。" : (r.whs_count ? "未匹配，请点击“配对”。" : "未检测到 USB 传感器，请用 USB 线连接 WHS-1。"), !paired && !!r.whs_count);
+  } catch (e) { pairMsg("读取失败：" + e, true); }
+}
+
+async function pairDevice() {
+  pairMsg("配对中（写入接收器地址到传感器）…");
+  try {
+    const r = await (await fetch("/api/pair", { method: "POST", body: JSON.stringify({ ecg_mode: $("ecgMode").value || "" }) })).json();
+    if (r.error) { pairMsg("配对失败：" + r.error, true); return; }
+    await readDevices();
+    pairMsg(r.matches
+      ? "配对成功：传感器目标地址 " + r.destination + " = 接收器 " + r.rrd_address + "。请拔下 USB，佩戴并开机后开始采集。"
+      : "配对后仍未匹配，请重试。", !r.matches);
+  } catch (e) { pairMsg("配对失败：" + e, true); }
+}
+
+// ---- control ---------------------------------------------------------------
+async function startCollect() {
+  setMsg("");
+  if (!paired) { setMsg("尚未配对，无法开始无线采集。", true); return; }
+  if ($("autoRecord").checked && !camStream) { setMsg("已勾选同步录像，请先开启摄像头。", true); return; }
+  const opts = {
+    duration: Number($("duration").value) || 0,
+    output: $("output").value.trim(),
+    subject: $("subject").value.trim(),
+    note: $("note").value.trim(),
+  };
+  try {
+    const r = await (await fetch("/api/start", { method: "POST", body: JSON.stringify(opts) })).json();
+    if (r.error) { setMsg("启动失败：" + r.error, true); return; }
+    setMsg("已开始采集：" + (r.session || ""), false);
+    if ($("autoRecord").checked && camStream) { beginRecording(r.session); autoRecActive = true; }
+    pollStatus();
+  } catch (e) { setMsg("启动失败：" + e, true); }
+}
+
+async function stopCollect() {
+  try {
+    if (recording) endRecording();          // 同时停止摄像头并自动保存
+    autoRecActive = false;
+    await fetch("/api/stop", { method: "POST" });
+    setMsg("已停止采集" + (currentVideoName ? "（录像保存中…）" : "") + "。", false);
+    pollStatus();
+  } catch (e) { setMsg("停止失败：" + e, true); }
+}
+
+// ---- sessions --------------------------------------------------------------
+let currentSessionName = null;
+
+function downloadCurrent() {
+  if (currentSessionName) window.location = "/api/download?name=" + encodeURIComponent(currentSessionName);
+}
+
+async function openDataDir() {
+  try { await fetch("/api/open-data-dir", { method: "POST" }); }
+  catch (e) { alert("无法打开目录：" + e); }
+}
+
+let lastSessions = null;
+
+async function loadSessions() {
+  const list = $("sessionsList");
+  list.innerHTML = "…";
+  try {
+    const r = await (await fetch("/api/sessions")).json();
+    lastSessions = r.sessions || [];
+    renderSessionList();
+  } catch (e) { list.innerHTML = "<div class='msg err show'>" + e + "</div>"; }
+}
+
+function refreshSessionList() { if (lastSessions) renderSessionList(); }
+
+function renderSessionList() {
+  const list = $("sessionsList");
+  const items = lastSessions || [];
+  $("sessionsHint").textContent = items.length + " " + t("sess.sessions");
+  if (!items.length) { list.innerHTML = "<div class='hint'>" + t("sess.empty") + "</div>"; return; }
+  list.innerHTML = "";
+  for (const it of items) {
+    const div = document.createElement("div");
+    div.className = "session-item";
+    const tags = (it.subject ? ` · ${t("sess.subject")} ${it.subject}` : "") + (it.has_video ? " · 🎥" : "");
+    div.innerHTML = `<div><strong>${it.name}</strong>${tags}</div>
+      <div class="meta">${(it.size / 1024).toFixed(1)} KB · ${it.mtime}</div>`;
+    div.onclick = () => openSession(it.name);
+    list.appendChild(div);
+  }
+}
+
+function fmtNum(v) {
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "number") return Number.isInteger(v) ? v : v.toFixed(3);
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+let lastSessionDetail = null;
+
+async function openSession(name) {
+  try {
+    const d = await (await fetch("/api/session?name=" + encodeURIComponent(name))).json();
+    if (d.error) { alert(d.error); return; }
+    lastSessionDetail = d;
+    renderSessionDetail(d);
+    $("sessionDetail").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { alert(e); }
+}
+
+function renderSessionDetail(d) {
+  if (!d) return;
+  $("sessionDetail").classList.remove("hidden");
+  $("sdName").textContent = d.name;
+  currentSessionName = d.name;
+  const meta = d.meta || {};
+  const parts = [];
+  if (meta.subject) parts.push(t("sess.subject") + ": " + meta.subject);
+  if (meta.note) parts.push(t("cap.note") + ": " + meta.note);
+  if (meta.started) parts.push(meta.started);
+  if (meta.ecg_mode) parts.push(meta.ecg_mode);
+  $("sdMeta").textContent = parts.join("  ·  ");
+  const vid = $("sdVideo");
+  if (d.video) { vid.src = "/api/file?name=" + encodeURIComponent(d.video); vid.style.display = "block"; }
+  else { vid.removeAttribute("src"); vid.style.display = "none"; }
+  const s = d.summary, hrv = s.hrv || {};
+  const dl = $("sdSummary");
+  const rows = [
+    [t("status.samples"), s.samples],
+    [t("sd.firstTime"), s.first_host_time],
+    [t("sd.lastTime"), s.last_host_time],
+    [t("sd.modes"), JSON.stringify(s.ecg_modes)],
+    [t("sd.lowBatt"), s.low_battery_samples],
+    [t("sd.hrMean"), s.hr_bpm_estimate?.mean != null ? s.hr_bpm_estimate.mean.toFixed(1) : "—"],
+    [t("sd.tempMean"), s.temperature_c?.mean != null ? s.temperature_c.mean.toFixed(2) : "—"],
+    [t("hrv.usable"), hrv.usable_intervals],
+    [t("hrv.meanRri") + " (ms)", hrv.mean_rri_ms != null ? hrv.mean_rri_ms.toFixed(1) : "—"],
+    [t("hrv.sdnn") + " (ms)", hrv.sdnn_ms != null ? hrv.sdnn_ms.toFixed(1) : "—"],
+    [t("hrv.rmssd") + " (ms)", hrv.rmssd_ms != null ? hrv.rmssd_ms.toFixed(1) : "—"],
+    ["pNN10/20/30/40/50 (%)", [hrv.pnn10, hrv.pnn20, hrv.pnn30, hrv.pnn40, hrv.pnn50].map(v => v != null ? v.toFixed(0) : "—").join(" / ")],
+  ];
+  dl.innerHTML = "";
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = fmtNum(v);
+    dl.append(dt, dd);
+  }
+  const se = d.series;
+  drawSeriesChart($("sc-hr"), [{ values: se.hr, color: COLORS.hr }]);
+  drawSeriesChart($("sc-ecg"), [{ values: se.ecg, color: COLORS.ecg }]);
+  drawSeriesChart($("sc-temp"), [{ values: se.temp, color: COLORS.temp }]);
+  drawSeriesChart($("sc-acc"), [
+    { values: se.accX, color: COLORS.x },
+    { values: se.accY, color: COLORS.y },
+    { values: se.accZ, color: COLORS.z },
+  ]);
+  renderFreq(d.freq_hrv || {}, "sdf-ratio", "sdf-lfnu", "sdf-hfnu", "sdf-note", "sc-spectrum");
+  const rp = d.respiration || {};
+  $("sd-resp").textContent = rp.ok
+    ? (fmtN(rp.resp_bpm, 1) + " " + t("resp.bpm") + " (" + t("resp.accel") + " " + fmtN(rp.resp_accel_bpm, 1) + " / " + t("resp.rsa") + " " + fmtN(rp.resp_rsa_bpm, 1) + ", " + (rp.agree ? t("resp.agree") : t("resp.disagree")) + ")")
+    : (rp.note || t("hrv.insufficient"));
+  drawRespWave($("sc-resp"), rp.ok ? rp.wave_t : [], rp.ok ? rp.wave_v : []);
+  const au = d.autonomic || {};
+  $("sd-auto").textContent = au.ok
+    ? (t("auto.state") + ": " + t("state." + (au.state_code || "unknown")) + " · " + t("auto.relax") + " " + fmtN(au.relax_score, 0) + " / " + t("auto.arousal") + " " + fmtN(au.arousal_score, 0) + " · SI " + fmtN(au.stress_index, 0) + " · " + t("auto.disclaimer"))
+    : (au.note || t("hrv.insufficient"));
+  drawState2D($("sc-state2d"), au.ok ? au.arousal_score : null, au.ok ? au.relax_score : null,
+    au.ok && au.arousal_score != null ? [{ arousal: au.arousal_score, relax: au.relax_score }] : []);
+}
+
+window.addEventListener("resize", () => { drawLive(); });
+
+(async () => {
+  await loadLang(LANG);
+  const sel = $("langSel"); if (sel) sel.value = LANG;
+  applyI18n();
+  refreshEnv();
+  readDevices();
+  onAutoRecordToggle();
+  updateStartGate();
+  pollStatus();
+  pollHealth();
+  pollLogs();
+  buildVizToggles();
+  syncVizPanels();
+  setInterval(pollStatus, 1000);
+  setInterval(pollHealth, 2000);
+  setInterval(pollLogs, 2000);
+  setInterval(updateAnalysisLive, 4000);
+})();
+</script>
+</body>
+</html>

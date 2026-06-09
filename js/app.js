@@ -18,7 +18,9 @@
         localStorage.removeItem(PERSIST_KEY);
         return null;
       }
-      if (!Array.isArray(obj.answers) || obj.answers.length !== QUESTIONS.length) return null;
+      const n = state.survey ? state.survey.questions.length : 0;
+      if (!Array.isArray(obj.answers) || obj.answers.length !== n) return null;
+      if (state.survey && obj.surveyId && obj.surveyId !== state.survey.id) return null;
       return obj;
     } catch (e) { return null; }
   }
@@ -27,6 +29,7 @@
     try {
       localStorage.setItem(PERSIST_KEY, JSON.stringify({
         savedAt: Date.now(),
+        surveyId: state.survey ? state.survey.id : null,
         current: state.current,
         answers: state.answers
       }));
@@ -40,17 +43,22 @@
   // ---------- State ----------
   const state = {
     current: 0,
-    answers: new Array(QUESTIONS.length).fill(null),
+    survey: null,                 // アクティブな量表（surveys/*.json から読み込み）
+    answers: [],                  // 量表確定時に長さを確保
     useCamera: false,
     result: null,
-    crisisShownForSession: false
+    crisisShownForSession: false,
+    subject: null,
+    sessionName: null
   };
 
   // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
   const screens = {
+    subject:  $('subjectScreen'),
     intro:    $('introScreen'),
     baseline: $('baselineScreen'),
+    rest:     $('restScreen'),
     quiz:     $('quizScreen'),
     result:   $('resultScreen')
   };
@@ -77,15 +85,26 @@
   const nextBtn        = $('nextBtn');
 
   const scoreNum       = $('scoreNum');
+  const scoreMax       = $('scoreMax');
   const severityText   = $('severityText');
   const scoreRing      = $('scoreRing');
-  const sevItems       = document.querySelectorAll('.sev-item');
+  const severityScale  = $('severityScale');
   const resultAdvice   = $('resultAdvice');
   const downloadVideo    = $('downloadVideo');
   const downloadSession  = $('downloadSession');
   const downloadCsv      = $('downloadAnswers');
   const openAnalyzerBtn  = $('openAnalyzerBtn');
   const restartBtn     = $('restartBtn');
+  const finishBtn      = $('finishBtn');
+
+  // 量表セレクタ / イントロ動的テキスト
+  const surveySelect  = $('surveySelect');
+  const introBrand    = $('introBrand');
+  const introTitle    = $('introTitle');
+  const introSubtitle = $('introSubtitle');
+  const introAbout    = $('introAbout');
+  const introCaution  = $('introCaution');
+  const footerSource  = $('footerSource');
 
   // ---------- Init ----------
   FaceRecorder.init({
@@ -94,6 +113,455 @@
     time:   $('recTime'),
     panel:  $('cameraPanel')
   });
+
+  // ============================================================
+  //   ECG integration (local server, same-origin /api)
+  // ============================================================
+  const STATE_LABEL_JA = { relaxed:'リラックス', stressed:'ストレス', balanced:'バランス', active:'活動的', unknown:'—' };
+
+  function showOverlay(show) {
+    const ov = $('ecgOverlay'); if (!ov) return;
+    ov.classList.toggle('hidden', !show);
+    ov.setAttribute('aria-hidden', show ? 'false' : 'true');
+  }
+
+  const ECG = {
+    active: false, session: null, startWall: null,
+    events: [], hrTimer: null, hrvTimer: null,
+
+    logEvent(type, q) { this.events.push({ q: (q == null ? state.current : q), type, ts: Date.now() }); },
+
+    async deviceInfo() {
+      try { return await (await fetch('/api/device-info')).json(); } catch (e) { return { error: String(e) }; }
+    },
+
+    async pair(ecgMode) {
+      try {
+        return await (await fetch('/api/pair', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ecg_mode: ecgMode || '' })
+        })).json();
+      } catch (e) { return { error: String(e) }; }
+    },
+
+    async start(sessionName) {
+      this.session = sessionName;
+      try {
+        const r = await (await fetch('/api/start', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ output: sessionName, duration: 0 })
+        })).json();
+        if (r.error) { console.warn('[ECG] start failed:', r.error); this.active = false; return false; }
+        this.startWall = Date.now();
+        this.active = true;
+        showOverlay(true);
+        this._startPolling();
+        return true;
+      } catch (e) { console.warn('[ECG] start error', e); this.active = false; return false; }
+    },
+
+    _startPolling() {
+      this._stopPolling();
+      this.hrTimer  = setInterval(() => this._pollHr(), 1000);
+      this.hrvTimer = setInterval(() => this._pollHrv(), 5000);
+      this._pollHr(); this._pollHrv();
+    },
+    _stopPolling() {
+      if (this.hrTimer) clearInterval(this.hrTimer); this.hrTimer = null;
+      if (this.hrvTimer) clearInterval(this.hrvTimer); this.hrvTimer = null;
+    },
+
+    async _pollHr() {
+      try {
+        const s = await (await fetch('/api/status')).json();
+        const hr = (s.last && s.last.hr_bpm != null) ? s.last.hr_bpm : null;
+        const ageOk = s.last != null;
+        const ovHr = $('ovHr'); if (ovHr) ovHr.textContent = hr != null ? Math.round(hr) : '—';
+        const dot = $('ovDot'); if (dot) dot.classList.toggle('bad', !ageOk || hr == null);
+        const q = $('ovQuality'); if (q) q.textContent = s.lowbattery ? '低電池 ⚠' : (ageOk ? '受信中' : '受信なし');
+      } catch (e) { /* ignore transient */ }
+    },
+    async _pollHrv() {
+      try {
+        const r = await (await fetch('/api/analysis?window=120')).json();
+        const au = r.autonomic || {};
+        const el = $('ovHrv');
+        if (el) {
+          if (au.ok) {
+            el.textContent = 'RMSSD ' + (au.rmssd_ms != null ? au.rmssd_ms.toFixed(0) : '—') +
+              ' · ' + (STATE_LABEL_JA[au.state_code] || '—');
+          } else { el.textContent = 'HRV 計測中…'; }
+        }
+      } catch (e) { /* ignore */ }
+    },
+
+    async stop() {
+      this._stopPolling();
+      if (this.active) { try { await fetch('/api/stop', { method: 'POST' }); } catch (e) {} }
+      this.active = false;
+      showOverlay(false);
+    },
+
+    buildSegments() {
+      const enters = this.events.filter(e => e.type === 'question_enter');
+      const segs = [];
+      for (let i = 0; i < enters.length; i++) {
+        const e = enters[i];
+        const end = (i + 1 < enters.length) ? enters[i + 1].ts : Date.now();
+        segs.push({ q: e.q, questionNumber: (e.q ?? 0) + 1, label: (state.survey?.questions[e.q]?.title || null), startTs: e.ts, endTs: end });
+      }
+      return segs;
+    },
+
+    // 安静時測定（前/後）の区間を rest_*_start/end イベントから組み立てる
+    buildRestSegments() {
+      const find = (t) => this.events.find(e => e.type === t);
+      const out = [];
+      const mk = (phase, label) => {
+        const s = find('rest_' + phase + '_start');
+        if (!s) return;
+        const e = find('rest_' + phase + '_end');
+        out.push({ q: phase, questionNumber: null, label, startTs: s.ts, endTs: e ? e.ts : null });
+      };
+      mk('pre', '安静（前）');
+      mk('post', '安静（後）');
+      return out;
+    }
+  };
+
+  // 被験者 ID をファイル名に使える安全な文字列へ。日本語名など Unicode の文字/数字は
+  // 残し（読みやすさのため）、ファイル名に使えない記号・空白のみ '_' に置換する。
+  function sanitizeId(raw) {
+    const s = (raw || '').normalize('NFC')
+      .replace(/[^\p{L}\p{N}_-]+/gu, '_')  // 文字・数字・_・- 以外を _
+      .replace(/_+/g, '_')                  // 連続 _ を 1 つに
+      .replace(/^_+|_+$/g, '')              // 前後の _ を除去
+      .slice(0, 40);
+    return s || 'subj';
+  }
+
+  function makeSessionName() {
+    const id = sanitizeId(state.subject?.id);
+    const sid = state.survey ? state.survey.id : 'survey';
+    return id + '_' + sid + '_' + timestamp();
+  }
+
+  // Start ECG + reset the session timeline. Called when leaving the intro.
+  async function beginSession() {
+    state.sessionName = makeSessionName();
+    ECG.events = [];
+    ECG.logEvent('session_start', -1);
+    await ECG.start(state.sessionName);  // proceeds even if the device isn't ready
+  }
+
+  // ============================================================
+  //   Survey (量表) selection + loading
+  // ============================================================
+  let manifestEntries = [];
+
+  async function initSurveys() {
+    try {
+      manifestEntries = await SurveyEngine.loadManifest();
+    } catch (e) {
+      console.warn('[survey] manifest load failed', e);
+      manifestEntries = [];
+    }
+    if (surveySelect) {
+      surveySelect.innerHTML = '';
+      manifestEntries.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.file;
+        opt.textContent = m.name;
+        opt.dataset.id = m.id;
+        if (m.default) opt.selected = true;
+        surveySelect.appendChild(opt);
+      });
+      surveySelect.addEventListener('change', () => loadSelectedSurvey().catch(e => console.warn(e)));
+    }
+    if (!manifestEntries.length) {
+      console.warn('[survey] no surveys in manifest; serve via local server');
+      return;
+    }
+    await loadSelectedSurvey();
+  }
+
+  async function loadSelectedSurvey() {
+    const file = surveySelect?.value || (manifestEntries[0] && manifestEntries[0].file);
+    if (!file) return;
+    try {
+      setActiveSurvey(await SurveyEngine.load(file));
+    } catch (e) {
+      console.error('[survey] load failed', e);
+    }
+  }
+
+  // アクティブ量表を適用：回答配列の確保 + イントロ/結果画面のテキスト・スケール更新
+  function setActiveSurvey(survey) {
+    state.survey = survey;
+    state.answers = new Array(survey.questions.length).fill(null);
+    state.current = 0;
+
+    const intro = survey.intro || {};
+    if (introBrand)    introBrand.textContent    = intro.brand || survey.shortName || '';
+    if (introTitle)    introTitle.textContent    = intro.title || survey.name || '';
+    if (introSubtitle) introSubtitle.textContent = intro.subtitle || '';
+    if (introAbout && intro.about)     introAbout.innerHTML   = intro.about;
+    if (introCaution && intro.caution) introCaution.innerHTML = intro.caution;
+
+    document.title = survey.shortName + ' + ECG | 抑うつ症状チェック';
+    if (footerSource && survey.source) {
+      const src = survey.source;
+      if (src.url) footerSource.innerHTML = '出典：<a href="' + encodeURI(src.url) + '" target="_blank" rel="noopener">' + escapeHtml(src.label || src.url) + '</a>';
+      else if (src.label) footerSource.textContent = '出典：' + src.label;
+    }
+
+    if (scoreMax) scoreMax.textContent = survey.scoring.maxScore;
+    buildSeverityScale(survey);
+  }
+
+  function buildSeverityScale(survey) {
+    if (!severityScale) return;
+    severityScale.innerHTML = '';
+    SurveyEngine.bandRanges(survey.severity).forEach(b => {
+      const div = document.createElement('div');
+      div.className = 'sev-item';
+      div.dataset.sev = b.key;
+      if (b.color) div.style.setProperty('--sev-color', b.color);
+      div.innerHTML = '<span>' + b.lo + ' – ' + b.hi + '</span>' + escapeHtml(b.label);
+      severityScale.appendChild(div);
+    });
+  }
+
+  // ---------- Subject info screen ----------
+  function collectSubject() {
+    return {
+      id:        ($('subjId').value || '').trim(),
+      ageBand:   $('subjAge').value || '',
+      sex:       $('subjSex').value || '',
+      sleep:     $('subjSleep').value || '',
+      caffeine:  $('subjCaffeine').value || '',
+      exercise:  $('subjExercise').value || '',
+      medication:$('subjMed').value || '',
+      note:      ($('subjNote').value || '').trim()
+    };
+  }
+  // 氏名/ID に非 ASCII（漢字・かな等）が含まれたらローマ字推奨のヒントを表示（非強制）
+  $('subjId')?.addEventListener('input', (e) => {
+    const hint = $('subjIdHint');
+    if (hint) hint.style.display = /[^\x00-\x7F]/.test(e.target.value) ? '' : 'none';
+  });
+
+  $('subjectNext')?.addEventListener('click', async () => {
+    const subj = collectSubject();
+    if (!subj.id) { alert('氏名 / ID を入力してください（必須）。'); $('subjId').focus(); return; }
+    if (!state.survey) {
+      await loadSelectedSurvey();
+      if (!state.survey) { alert('量表を読み込めませんでした。ローカルサーバ経由で開いているかご確認ください。'); return; }
+    }
+    state.subject = subj;
+    switchScreen('intro');
+  });
+
+  // ---------- ECG pairing widget (top-right, setup screens only) ----------
+  const pwPanel = $('ecgPairPanel');
+  $('ecgPairPill')?.addEventListener('click', () => {
+    const opened = pwPanel.classList.toggle('hidden') === false;
+    $('ecgPairPill').setAttribute('aria-expanded', opened ? 'true' : 'false');
+    if (opened) refreshEcgWidget();
+  });
+  function pwMsg(t, cls) { const e = $('pwMsg'); if (!e) return; e.textContent = t || ''; e.className = 'pw-msg tiny' + (cls ? (' ' + cls) : ''); }
+
+  const PAIRED_KEY = 'qids_paired_rrd';
+  let ecgServerUp = false;   // /api が応答するか（= ECG バックエンド server.py が稼働中か）
+
+  // 左上のサーバ稼働状態インジケータを更新（全画面・常時）
+  function setServerBadge(up) {
+    ecgServerUp = up;
+    const el = $('serverStatus');
+    if (el) {
+      el.classList.toggle('down', !up);
+      const txt = $('srvText'); if (txt) txt.textContent = up ? 'サーバ接続中' : 'サーバ未接続';
+    }
+  }
+  async function pingServer() {
+    try {
+      const res = await fetch('/api/health', { cache: 'no-store' });
+      const ct = res.headers.get('content-type') || '';
+      return res.ok && ct.includes('application/json');
+    } catch (e) { return false; }
+  }
+  async function pollServerBadge() { setServerBadge(await pingServer()); }
+
+  async function refreshEcgWidget() {
+    const info = await ECG.deviceInfo();
+    setServerBadge(!info.error);
+    // ECG バックエンドが無い静的配信（GitHub Pages / http.server）では、
+    // /ecg/ も /api/* も存在しないため ECG 関連 UI を丸ごと隠す（404 リンク回避）。
+    const notice = $('ecgNotice');
+    if (notice) notice.style.display = ecgServerUp ? '' : 'none';
+    updatePairWidgetVisibility();
+    const dot = $('pwDot'), st = $('pwStatus'), inf = $('pwInfo'), devLine = $('ecgDevStatus');
+    let ok = false, label, devText;
+    if (info.error) {
+      label = 'サーバ未接続'; devText = 'サーバ未接続';
+    } else if (info.collecting) {
+      ok = true; label = '計測中'; devText = '計測中';
+    } else if (info.whs && info.rrd_address) {
+      // USB sensor present → authoritative match; remember it
+      ok = !!info.matches;
+      if (ok) { try { localStorage.setItem(PAIRED_KEY, info.rrd_address); } catch (e) {} }
+      else    { try { localStorage.removeItem(PAIRED_KEY); } catch (e) {} }
+      label = ok ? 'ペア済み ✓' : '未ペア';
+      devText = ok ? '受信機 OK · ペア済み（USB）' : '受信機 OK · 未ペア（ペアリングを押す）';
+    } else if (info.rrd_address && _pairedRrd() === info.rrd_address) {
+      // USB removed but previously paired to this receiver → wireless ready
+      ok = true; label = 'ペア済み（無線）'; devText = '受信機 OK · ペア済み（USB 抜去・装着OK）';
+    } else if (info.rrd_address) {
+      label = '未ペア'; devText = '受信機 OK · 未ペア';
+    } else {
+      label = '受信機なし'; devText = '受信機が見つかりません';
+    }
+    if (st)  st.textContent = 'ECG: ' + label;
+    if (dot) dot.classList.toggle('bad', !ok);
+    if (devLine) { devLine.textContent = devText; devLine.style.color = ok ? '#1f7a4d' : '#b54708'; }
+    if (inf) {
+      if (info.error) inf.textContent = info.error;
+      else {
+        const w = info.whs;
+        inf.textContent =
+          '受信機: ' + (info.rrd_address || '—') + '\n' +
+          'USB センサー: ' + (info.whs_count ?? 0) + ' 台' +
+          (info.whs_count ? '' : '（装着時は 0 で正常）') + '\n' +
+          (w ? ('目標: ' + (w.destination || '—') + '\n') : '') +
+          '状態: ' + label;
+      }
+    }
+    return info;
+  }
+  function _pairedRrd() { try { return localStorage.getItem(PAIRED_KEY); } catch (e) { return null; } }
+
+  // 無線受信テスト：短時間だけ受信して、装着中のセンサーから本当にデータが来るか確認
+  async function wirelessTest() {
+    pwMsg('無線受信テスト中…（約4秒）');
+    try {
+      const s1 = await (await fetch('/api/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ output: '_wireless_test', duration: 0 })
+      })).json();
+      if (s1.error) { pwMsg('開始失敗: ' + s1.error, 'err'); return; }
+      let got = 0, hr = null;
+      const t0 = Date.now();
+      while (Date.now() - t0 < 4000) {
+        await new Promise(r => setTimeout(r, 600));
+        const stt = await (await fetch('/api/status')).json();
+        if ((stt.total || 0) > got) { got = stt.total; if (stt.last && stt.last.hr_bpm != null) hr = stt.last.hr_bpm; }
+      }
+      try { await fetch('/api/stop', { method: 'POST' }); } catch (e) {}
+      if (got > 0) {
+        // 無線受信できた = ペアリング有効 → 記憶してラベルを更新
+        try { const di = await ECG.deviceInfo(); if (di.rrd_address) localStorage.setItem(PAIRED_KEY, di.rrd_address); } catch (e) {}
+        await refreshEcgWidget();
+        pwMsg('無線受信 OK ✓ ' + (hr != null ? ('HR ' + Math.round(hr) + ' bpm') : '') + '（' + got + ' サンプル）'
+          + (hr != null && (hr < 40 || hr > 150) ? ' ※電極の接触をご確認ください' : ''), 'ok');
+      } else {
+        pwMsg('受信なし。センサーの装着・電源 ON・電池・距離をご確認ください。', 'err');
+      }
+    } catch (e) { pwMsg('テスト失敗: ' + e, 'err'); }
+  }
+
+  $('pwRead')?.addEventListener('click', async () => { pwMsg('読み取り中…'); await refreshEcgWidget(); pwMsg(''); });
+  $('pwPair')?.addEventListener('click', async () => {
+    pwMsg('ペアリング中（USB 接続を確認）…');
+    const r = await ECG.pair($('pwEcgMode')?.value || '');
+    if (r.error) { pwMsg('失敗: ' + r.error, 'err'); return; }
+    await refreshEcgWidget();
+    pwMsg(r.matches ? 'ペアリング成功 ✓ USB を抜いて装着 → 無線受信テストで確認できます。'
+                    : 'ペアリング後も不一致。もう一度お試しください。', r.matches ? 'ok' : 'err');
+  });
+  $('pwWifi')?.addEventListener('click', wirelessTest);
+
+  function updatePairWidgetVisibility() {
+    const w = $('ecgPairWidget'); if (!w) return;
+    const setup = screens.subject.classList.contains('active') || screens.intro.classList.contains('active');
+    const show = setup && ecgServerUp;   // ECG バックエンドが無いときは配対ピルも隠す
+    w.classList.toggle('hidden', !show);
+    if (!show && pwPanel) pwPanel.classList.add('hidden');  // collapse when hidden
+  }
+
+  updatePairWidgetVisibility();
+  refreshEcgWidget();
+  initSurveys();   // 量表リストを読み込み、既定の量表を適用
+  pollServerBadge();                       // 左上サーバ状態を即時更新
+  setInterval(pollServerBadge, 5000);      // 全画面で常時ポーリング
+  setInterval(() => {
+    if (screens.subject.classList.contains('active') || screens.intro.classList.contains('active')) refreshEcgWidget();
+  }, 3000);
+
+  // ---------- Auto-save (no manual export needed) ----------
+  async function autoSave() {
+    const status = $('autosaveStatus');
+    const setS = (t, ok) => {
+      if (!status) return;
+      status.textContent = t;
+      let bg = '#e8f5ee', fg = '#1f7a4d', bd = '#bfe6d0';                          // ok（緑）
+      if (ok === false)       { bg = '#fdeceb'; fg = '#b42318'; bd = '#f5c9c5'; }  // エラー（赤）
+      else if (ok === 'info') { bg = '#eef4fb'; fg = '#1f5b8f'; bd = '#cfe0f2'; }  // 情報（青）
+      status.style.background = bg; status.style.color = fg; status.style.borderColor = bd;
+    };
+
+    // 保存バックエンド（server.py）が無い静的配信では /api/* が存在せず、
+    // POST に対し HTML エラーページが返るため JSON parse で失敗する。
+    // その場合はサーバ保存を試みず、手動エクスポートへ誘導する。
+    if (!ecgServerUp) {
+      setS('ローカル保存サーバが無いため、自動保存はスキップされました。必要に応じて下の「手動エクスポート」から保存してください。', 'info');
+      return;
+    }
+
+    setS('全データを保存中…');
+    const session = state.sessionName;
+
+    // 1) upload recording (if camera was used)
+    let videoName = null;
+    const blob = state.useCamera ? FaceRecorder.getBlob() : null;
+    if (blob && session) {
+      const ext = FaceRecorder.getMime().includes('mp4') ? 'mp4' : 'webm';
+      videoName = session + '.' + ext;
+      try { await fetch('/api/upload-video?name=' + encodeURIComponent(videoName), { method: 'POST', body: blob }); }
+      catch (e) { console.warn('video upload failed', e); videoName = null; }
+    }
+
+    // 2) camera meta (resolution/fps/device) from the recorder
+    let camera = null, recorderStartIso = null;
+    try { const sl = FaceRecorder.getSessionLog(); camera = sl.meta?.device?.camera || null; recorderStartIso = sl.meta?.sessionStart || null; } catch (e) {}
+
+    // 3) combined session.json + answers.csv + per-question HRV (server-side)
+    const payload = {
+      session,
+      survey: { id: state.survey.id, name: state.survey.name },
+      subject: state.subject,
+      answers: state.answers.map((a, i) => ({ q: i + 1, title: state.survey.questions[i].title, domain: state.survey.questions[i].domain, score: a })),
+      result: state.result,
+      events: ECG.events,
+      segments: ECG.buildSegments(),
+      rest_segments: ECG.buildRestSegments(),
+      video: videoName,
+      camera,
+      sync: { ecgStartWall: ECG.startWall, recorderStartIso }
+    };
+    try {
+      const res = await fetch('/api/save-session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) {
+        setS('保存に失敗しました（ローカルサーバに接続できません）。start.bat で起動するか、下の「手動エクスポート」をご利用ください。', false);
+        return;
+      }
+      const r = await res.json();
+      if (r.error) { setS('保存に失敗しました: ' + r.error, false); return; }
+      setS(`✓ 保存しました（${r.files?.length || 0} ファイル・ECG ${r.ecg_samples || 0} サンプル・設問別HRV ${r.per_question || 0}）\n保存先: ${r.dir}`, true);
+    } catch (e) { setS('保存に失敗しました: ' + e, false); }
+  }
 
   // ---------- Intro screen ----------
   function updateStartButtonsDisabled() {
@@ -141,10 +609,13 @@
     startCamBtn.innerHTML = '起動中…';
     const res = RESOLUTIONS[camResSel?.value] || RESOLUTIONS['720'];
     const fps = parseInt(camFpsSel?.value || '30', 10);
-    const ok = await FaceRecorder.start({ width: res.width, height: res.height, frameRate: fps });
+    const vbps = res.height >= 1080 ? 16_000_000 : (res.height >= 720 ? 10_000_000 : 6_000_000);
+    const ok = await FaceRecorder.start({ width: res.width, height: res.height, frameRate: fps, videoBitsPerSecond: vbps });
     if (ok) {
       state.useCamera = true;
-      await runBaselineCapture();  // 3秒のベースライン撮影を挟む
+      await beginSession();        // ECG 採集を開始（ベースラインも記録）
+      await runBaselineCapture();  // 3秒の表情ベースライン撮影
+      await runRestMeasurement('pre');  // 安静時測定（前・3分）
       goQuiz();
     } else {
       startCamBtn.disabled = false;
@@ -184,9 +655,48 @@
     FaceRecorder.logEvent('baseline_end', { skipped, durationMs: +(performance.now() - start).toFixed(2) });
   }
 
-  startNoBtn.addEventListener('click', () => {
+  // ---------- 安静時測定（前/後・3分） ----------
+  const REST_DURATION_MS = 3 * 60 * 1000;
+  // 全画面の注視十字のみ表示（被験者の認知負荷を最小化）。
+  // タイマー／スキップは操作者向けに隅へ控えめに表示。浮動 UI（カメラ/心拍/サーバ）は
+  // 全画面の rest スクリーン自体が覆い隠す。
+  async function runRestMeasurement(phase) {   // phase: 'pre' | 'post'
+    const phaseLabel = $('restPhaseLabel'), cd = $('restCountdown'), restSkip = $('restSkip');
+    if (phaseLabel) phaseLabel.textContent = phase === 'pre' ? '安静（前）' : '安静（後）';
+    if (cd) cd.textContent = '3:00';
+
+    switchScreen('rest');
+    document.body.style.overflow = 'hidden';   // スクロール抑止 → 全画面で浮動 UI を完全に覆う
+    ECG.logEvent('rest_' + phase + '_start', -1);
+    if (state.useCamera) FaceRecorder.logEvent('rest_' + phase + '_start');
+
+    let skipped = false;
+    const onSkip = () => { skipped = true; };
+    restSkip?.addEventListener('click', onSkip, { once: true });
+
+    const start = performance.now();
+    await new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (skipped) { clearInterval(timer); resolve(); return; }
+        const elapsed = performance.now() - start;
+        const remaining = Math.max(0, REST_DURATION_MS - elapsed);
+        const s = Math.ceil(remaining / 1000);
+        if (cd) cd.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+        if (elapsed >= REST_DURATION_MS) { clearInterval(timer); resolve(); }
+      }, 200);
+    });
+
+    restSkip?.removeEventListener('click', onSkip);
+    document.body.style.overflow = '';   // スクロール抑止を解除
+    ECG.logEvent('rest_' + phase + '_end', -1);
+    if (state.useCamera) FaceRecorder.logEvent('rest_' + phase + '_end', { skipped });
+  }
+
+  startNoBtn.addEventListener('click', async () => {
     state.useCamera = false;
     FaceRecorder.showPanel(false);
+    await beginSession();   // ECG 採集を開始（カメラ無しでも心電は記録）
+    await runRestMeasurement('pre');  // 安静時測定（前・3分）
     goQuiz();
   });
 
@@ -195,19 +705,21 @@
     Object.values(screens).forEach(s => s.classList.remove('active'));
     screens[key].classList.add('active');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (typeof updatePairWidgetVisibility === 'function') updatePairWidgetVisibility();
   }
 
   function goQuiz() {
+    const total = state.survey.questions.length;
     // 前回の未完了セッションがあれば再開するかを尋ねる（カメラなしフロー限定）
     const persisted = loadPersisted();
     if (persisted && !state.useCamera) {
       const filled = persisted.answers.filter(a => a !== null).length;
       if (filled > 0) {
         const resume = confirm(
-          `前回の途中までの回答が残っています（${filled}/${QUESTIONS.length} 問回答済み）。続きから再開しますか？\n\n「キャンセル」を押すと最初からやり直します。`
+          `前回の途中までの回答が残っています（${filled}/${total} 問回答済み）。続きから再開しますか？\n\n「キャンセル」を押すと最初からやり直します。`
         );
         if (resume) {
-          state.current = Math.min(persisted.current, QUESTIONS.length - 1);
+          state.current = Math.min(persisted.current, total - 1);
           state.answers = [...persisted.answers];
           renderQuestion();
           switchScreen('quiz');
@@ -224,19 +736,14 @@
   }
 
   // ---------- Quiz rendering ----------
-  const DOMAIN_LABEL = {
-    sleep:'睡眠', mood:'気分', appetite:'食欲・体重',
-    concentration:'集中力', self:'自己評価', suicide:'死・自殺',
-    interest:'興味', energy:'エネルギー', psychomotor:'精神運動'
-  };
-
   function renderQuestion() {
+    const survey = state.survey;
     const i = state.current;
-    const q = QUESTIONS[i];
+    const q = survey.questions[i];
 
-    progressText.textContent = `${i + 1} / ${QUESTIONS.length}`;
-    progressDomain.textContent = DOMAIN_LABEL[q.domain] || '';
-    progressFill.style.width = `${((i + 1) / QUESTIONS.length) * 100}%`;
+    progressText.textContent = `${i + 1} / ${survey.questions.length}`;
+    progressDomain.textContent = (survey.domainLabels && survey.domainLabels[q.domain]) || '';
+    progressFill.style.width = `${((i + 1) / survey.questions.length) * 100}%`;
 
     qNum.textContent = `Q${q.id}`;
     qTitle.textContent = q.title;
@@ -264,9 +771,10 @@
 
     prevBtn.disabled = i === 0;
     nextBtn.disabled = state.answers[i] === null;
-    nextBtn.textContent = i === QUESTIONS.length - 1 ? '結果を見る' : '次へ';
+    nextBtn.textContent = i === survey.questions.length - 1 ? '結果を見る' : '次へ';
 
     if (state.useCamera) FaceRecorder.setQuestionIndex(i);
+    ECG.logEvent('question_enter', i);
   }
 
   function selectAnswer(idx) {
@@ -280,10 +788,12 @@
     });
     nextBtn.disabled = false;
     if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });
+    ECG.logEvent('answer_selected', state.current);
     persist();
 
-    // Q12（index 11, 自殺念慮）で 2 以上 → 危機介入モーダルを即時表示
-    if (state.current === 11 && idx >= 2) {
+    // 自殺念慮の設問でしきい値以上 → 危機介入モーダルを即時表示（量表 JSON の crisis 定義で駆動）
+    const cq = state.survey.questions[state.current];
+    if (cq.crisis && idx >= (cq.crisis.minScore != null ? cq.crisis.minScore : 1)) {
       showCrisisModal();
     }
   }
@@ -322,7 +832,8 @@
     if (state.useCamera) {
       FaceRecorder.logEvent('question_finalize', { a: state.answers[state.current] });
     }
-    if (state.current < QUESTIONS.length - 1) {
+    ECG.logEvent('question_finalize', state.current);
+    if (state.current < state.survey.questions.length - 1) {
       state.current++;
       renderQuestion();
     } else {
@@ -333,9 +844,9 @@
   // keyboard: 0/1/2/3 to answer, Enter to advance
   document.addEventListener('keydown', (e) => {
     if (!screens.quiz.classList.contains('active')) return;
-    if (['0','1','2','3'].includes(e.key)) {
+    if (/^[0-9]$/.test(e.key)) {
       const idx = parseInt(e.key, 10);
-      const q = QUESTIONS[state.current];
+      const q = state.survey.questions[state.current];
       if (idx < q.options.length) selectAnswer(idx);
     } else if (e.key === 'Enter' && !nextBtn.disabled) {
       nextBtn.click();
@@ -346,51 +857,47 @@
 
   // ---------- Finish ----------
   async function finish() {
-    const result = calculateScore(state.answers);
+    const result = SurveyEngine.score(state.survey, state.answers);
     state.result = result;
+
+    await runRestMeasurement('post');  // 安静時測定（後・3分）— ECG/録画は継続中
 
     if (state.useCamera) {
       nextBtn.disabled = true;
       nextBtn.textContent = '記録停止中…';
       await FaceRecorder.stop();
     }
+    await ECG.stop();   // ECG 採集を停止（オーバーレイも閉じる）
 
     clearPersist();  // 完了したら進捗を破棄
     renderResult(result);
     switchScreen('result');
+    autoSave().catch(e => console.error('autoSave failed', e));  // 全データを自動保存
   }
 
   function renderResult(result) {
     scoreNum.textContent = result.total;
     severityText.textContent = result.severity;
+    if (scoreMax) scoreMax.textContent = result.maxScore;
 
-    const sevColors = {
-      normal:   'var(--c-normal)',
-      mild:     'var(--c-mild)',
-      moderate: 'var(--c-moderate)',
-      severe:   'var(--c-severe)',
-      extreme:  'var(--c-extreme)'
-    };
-    const color = sevColors[result.severityKey] || 'var(--c-primary)';
+    const color = result.color || 'var(--c-primary)';
+    const max = result.maxScore || 27;
     scoreRing.style.setProperty('--sev-color', color);
-    scoreRing.style.setProperty('--sev-angle', `${(result.total / 27) * 360}deg`);
+    scoreRing.style.setProperty('--sev-angle', `${(result.total / max) * 360}deg`);
     severityText.style.setProperty('--sev-color', color);
 
-    sevItems.forEach(el => {
-      el.classList.toggle('active', el.dataset.sev === result.severityKey);
-      if (el.dataset.sev === result.severityKey) {
+    document.querySelectorAll('#severityScale .sev-item').forEach(el => {
+      const active = el.dataset.sev === result.severityKey;
+      el.classList.toggle('active', active);
+      if (active) {
         el.style.setProperty('--sev-color', color);
+        el.style.color = color;   // PHQ-9 等の区間キーは CSS に無いため明示指定
+      } else {
+        el.style.removeProperty('color');
       }
     });
 
-    const advice = {
-      normal:   '現時点では問題となるうつ症状は認められません。今後もご自身の心身の変化に気を配って過ごしてください。',
-      mild:     '軽度のうつ症状が疑われます。十分な休養・睡眠・運動を心がけ、症状が2週間以上続く場合は専門機関へのご相談をおすすめします。',
-      moderate: '中等度のうつ症状が疑われます。早めに心療内科・精神科などの医療機関にご相談ください。',
-      severe:   '重度のうつ症状が疑われます。できるだけ早く医療機関を受診してください。',
-      extreme:  'きわめて重度のうつ症状が疑われます。至急、医療機関への受診をお願いいたします。身近な方のサポートも得てください。'
-    };
-    resultAdvice.textContent = advice[result.severityKey];
+    resultAdvice.textContent = result.advice || '';
 
     // Downloads / analyze
     const haveRecording = state.useCamera && FaceRecorder.getBlob();
@@ -413,18 +920,20 @@
   // （メタ情報 + events + questionSegments + 回答）のみを書き出す。
   // 特徴点（frames）は Phase 2 で追加される extract.mjs が後から埋める。
   function buildSessionOut() {
+    const survey = state.survey;
     const data = FaceRecorder.getSessionLog();
     if (Array.isArray(data.questionSegments)) {
       data.questionSegments = data.questionSegments.map(s => ({
         ...s,
-        title:  QUESTIONS[s.q]?.title  ?? null,
-        domain: QUESTIONS[s.q]?.domain ?? null
+        title:  survey.questions[s.q]?.title  ?? null,
+        domain: survey.questions[s.q]?.domain ?? null
       }));
     }
     return {
       ...data,
+      survey: { id: survey.id, name: survey.name },
       result: state.result,
-      answers: state.answers.map((a, i) => ({ q: i + 1, title: QUESTIONS[i].title, score: a }))
+      answers: state.answers.map((a, i) => ({ q: i + 1, title: survey.questions[i].title, score: a }))
     };
   }
 
@@ -614,34 +1123,57 @@
   }
 
   downloadCsv.addEventListener('click', () => {
-    const rows = [['No', '項目', 'スコア(0-3)', '領域']];
+    const survey = state.survey;
+    const labels = survey.domainLabels || {};
+    const rows = [['No', '項目', 'スコア', '領域']];
     state.answers.forEach((a, i) => {
-      rows.push([QUESTIONS[i].id, QUESTIONS[i].title, a ?? '', DOMAIN_LABEL[QUESTIONS[i].domain] || '']);
+      const q = survey.questions[i];
+      rows.push([q.id, q.title, a ?? '', labels[q.domain] || q.domain || '']);
     });
     rows.push([]);
     rows.push(['合計点', state.result.total]);
     rows.push(['重症度', state.result.severity]);
     const csv = '\uFEFF' + rows.map(r => r.map(escapeCsv).join(',')).join('\r\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    downloadBlob(blob, `qids-j_answers_${timestamp()}.csv`);
+    downloadBlob(blob, `${survey.id}_answers_${timestamp()}.csv`);
   });
 
+  // セッションを破棄して被験者情報画面へ戻る（「完了」「もう一度チェックする」共通）
+  // 被験者フォームを初期化（次の被験者のため・前の人の情報を残さない）
+  function clearSubjectForm() {
+    state.subject = null;
+    ['subjId', 'subjAge', 'subjSex', 'subjSleep', 'subjCaffeine', 'subjExercise', 'subjMed', 'subjNote']
+      .forEach(id => { const el = $(id); if (el) el.value = ''; });
+  }
+
+  function resetToStart() {
+    clearPersist();
+    state.current = 0;
+    state.answers = state.survey ? new Array(state.survey.questions.length).fill(null) : [];
+    state.result = null;
+    state.useCamera = false;
+    state.crisisShownForSession = false;
+    state.sessionName = null;
+    ECG.events = []; ECG.startWall = null; ECG.active = false;
+    showOverlay(false);
+    FaceRecorder.showPanel(false);
+    clearSubjectForm();   // ← 前の被験者の入力をクリア（量表選択とカメラ設定は維持）
+    [consentMedical, consentAge, consentData, consentCamera].forEach(el => { el.checked = false; });
+    updateStartButtonsDisabled();
+    startCamBtn.innerHTML = '<span class="ic">●</span> カメラを使って開始';
+    switchScreen('subject');   // 新しい計測 → 被験者情報から
+  }
+
+  // 「完了」：そのまま被験者情報画面へ（自動保存済み前提のため確認なし）
+  finishBtn?.addEventListener('click', () => resetToStart());
+
+  // 「もう一度チェックする」：未保存の映像がある場合のみ確認してからリセット
   restartBtn.addEventListener('click', () => {
     if (state.useCamera) {
       const confirmed = confirm('記録したデータと映像は失われます。やり直しますか？');
       if (!confirmed) return;
     }
-    clearPersist();
-    state.current = 0;
-    state.answers.fill(null);
-    state.result = null;
-    state.useCamera = false;
-    state.crisisShownForSession = false;
-    FaceRecorder.showPanel(false);
-    [consentMedical, consentAge, consentData, consentCamera].forEach(el => { el.checked = false; });
-    updateStartButtonsDisabled();
-    startCamBtn.innerHTML = '<span class="ic">●</span> カメラを使って開始';
-    switchScreen('intro');
+    resetToStart();
   });
 
   // ---------- Utils ----------

@@ -1,0 +1,6 @@
+{
+  "surveys": [
+    { "id": "qids-j", "name": "QIDS-J", "file": "qids-j.json", "items": 16 },
+    { "id": "phq-9",  "name": "PHQ-9",  "file": "phq-9.json",  "items": 9, "default": true }
+  ]
+}

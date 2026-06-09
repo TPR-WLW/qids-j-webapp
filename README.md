@@ -1,10 +1,12 @@
-# QIDS-J セルフチェック Web アプリ
+# QIDS-J / PHQ-9 セルフチェック Web アプリ
 
-厚生労働省が公開する **簡易抑うつ症状尺度（QIDS-J）** を、1 問ずつ回答する Web アンケート形式で実装したセルフチェックツールです。
-回答中の表情を Web カメラで録画し、顔の 68 点ランドマークの変化も記録できます。
+抑うつ症状の自己記入式尺度を、1 問ずつ回答する Web アンケート形式で実装したセルフチェックツールです。
+最初の画面で **質問票を選択**でき、現在は **QIDS-J**（簡易抑うつ症状尺度）と **PHQ-9**（こころとからだの質問票）に対応しています。
+設問・選択肢・採点ロジック・重症度区分・危機介入のしきい値はすべて `surveys/*.json` で定義されており、JSON を追加するだけで新しい尺度を増やせます。
+回答中の表情を Web カメラで録画し、顔のランドマークの変化も記録できます。
 すべての処理はブラウザ内で完結し、映像・データは外部へ送信されません。
 
-> 出典：[厚生労働省「簡易抑うつ症状尺度（QIDS-J）」](https://www.mhlw.go.jp/bunya/shougaihoken/kokoro/dl/02.pdf)
+> 出典：[厚生労働省「簡易抑うつ症状尺度（QIDS-J）」](https://www.mhlw.go.jp/bunya/shougaihoken/kokoro/dl/02.pdf) ／ PHQ-9（Patient Health Questionnaire-9）
 
 **Live demo**: https://tpr-wlw.github.io/qids-j-webapp/
 **English README**: [README_EN.md](./README_EN.md)
@@ -13,10 +15,11 @@
 
 ## 主な機能
 
-- **QIDS-J 16 項目** — 日本語原文、順序固定、1 画面 1 問
-- **QIDS-J 採点ロジック**
-  - 睡眠（Q1-Q4）／食欲・体重（Q6-Q9）／精神運動（Q15-Q16）はそれぞれ最大値を採用
-  - 9 項目合計 0–27 点、5 段階の重症度判定（正常／軽度／中等度／重度／きわめて重度）
+- **複数の質問票に対応** — 最初の画面で選択（現在 **QIDS-J** / **PHQ-9**）。題库は `surveys/*.json` で定義し、追加は JSON を置くだけ
+- **質問票ごとの採点ロジック（JSON で宣言的に定義）**
+  - QIDS-J（16 項目）: 睡眠（Q1-Q4）／食欲・体重（Q6-Q9）／精神運動（Q15-Q16）はそれぞれ最大値を採用。9 項目合計 0–27 点、5 段階判定（正常／軽度／中等度／重度／きわめて重度）
+  - PHQ-9（9 項目）: 9 項目の単純合計 0–27 点、5 段階判定（なし〜最小／軽度／中等度／中等度〜重度／重度）
+  - 危機介入モーダルのしきい値も質問票ごとに定義（QIDS-J は Q12 ≥ 2、PHQ-9 は Q9 ≥ 1）
 - **Web カメラ録画**（`MediaRecorder` / WebM-VP9）
 - **顔ランドマーク追跡**（[MediaPipe FaceLandmarker](https://developers.google.com/mediapipe/solutions/vision/face_landmarker)）
   - **478 点** 3D メッシュ（x, y, z）
@@ -36,10 +39,14 @@
 
 ```
 .
-├── index.html           # 3 画面（イントロ／問卷／結果）
+├── index.html           # 4 画面（被験者情報／イントロ／問卷／結果）
 ├── css/style.css        # レスポンシブ・落ち着いた青緑配色
+├── surveys/             # 質問票を JSON で定義（量表の追加はここに置くだけ）
+│   ├── manifest.json    #   選択可能な質問票の一覧
+│   ├── qids-j.json      #   QIDS-J 16 項目（設問・採点・重症度・危機介入）
+│   └── phq-9.json       #   PHQ-9 9 項目
 ├── js/
-│   ├── questions.js     # QIDS-J 16 項目 + 採点関数
+│   ├── survey.js        # 質問票エンジン（JSON 読み込み・採点・重症度判定）
 │   ├── recorder.js      # MediaPipe FaceLandmarker + MediaRecorder
 │   └── app.js           # 画面遷移・回答管理・結果表示・ダウンロード
 ├── utils/
@@ -48,6 +55,19 @@
 │   └── README.md        # 出力 JSON のフォーマット仕様と利用サンプル
 └── .claude/launch.json  # Claude Code プレビュー設定（ローカル開発用）
 ```
+
+### 質問票の追加方法
+
+新しい尺度を追加するには、コードを変更せずに JSON を 1 つ置くだけです。
+
+1. `surveys/<id>.json` を作成（既存の `qids-j.json` / `phq-9.json` が雛形）。
+   - `questions[]`: `{ id, domain, title, options }`。`options` は配列か `optionSets` のキー名（共通選択肢の使い回し）。自殺念慮など即時介入が必要な設問には `crisis: { minScore }` を付与。
+   - `scoring`: `{ "method": "sum" }`（単純合計）か `{ "method": "grouped", "groups": [...] }`（組ごとに `max` / `sum`）。
+   - `severity[]`: `{ max, key, label, color, advice }`（`max` 以下で区間判定）。
+   - `intro` / `source` / `domainLabels`: 画面表示用メタ情報。
+2. `surveys/manifest.json` に 1 行追加（`id` / `name` / `file`）。
+
+`name` がそのまま選択ドロップダウンに表示されます。
 
 ---
 

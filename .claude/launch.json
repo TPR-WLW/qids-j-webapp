@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1"],
       "port": 8765
+    },
+    {
+      "name": "qids-ecg",
+      "runtimeExecutable": "C:\\Users\\kito\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+      "runtimeArgs": ["server/server.py", "--no-browser", "--port", "8802"],
+      "port": 8802
     }
   ]
 }

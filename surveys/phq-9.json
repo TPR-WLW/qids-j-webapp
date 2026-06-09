@@ -1,0 +1,56 @@
+{
+  "id": "phq-9",
+  "name": "こころとからだの質問票（PHQ-9）",
+  "shortName": "PHQ-9",
+  "source": {
+    "label": "PHQ-9（Patient Health Questionnaire-9）日本語版",
+    "url": ""
+  },
+  "intro": {
+    "brand": "PHQ-9",
+    "title": "こころとからだの質問票",
+    "subtitle": "Patient Health Questionnaire-9 — 日本語版",
+    "caution": "PHQ-9 で 10 点以上、または Q9（死についての考え）で点数がついた場合は、<strong>できるだけ早く</strong>医療機関・専門家にご相談ください。"
+  },
+  "domainLabels": {
+    "interest": "興味・喜び",
+    "mood": "気分",
+    "sleep": "睡眠",
+    "energy": "エネルギー",
+    "appetite": "食欲",
+    "self": "自己評価",
+    "concentration": "集中力",
+    "psychomotor": "精神運動",
+    "suicide": "死・自殺"
+  },
+  "optionSets": {
+    "freq4": [
+      "全くない",
+      "数日",
+      "半分以上",
+      "ほとんど毎日"
+    ]
+  },
+  "questions": [
+    { "id": 1, "domain": "interest",      "title": "物事に対してほとんど興味がない、または楽しめない", "options": "freq4" },
+    { "id": 2, "domain": "mood",          "title": "気分が落ち込む、憂うつになる、または絶望的な気持ちになる", "options": "freq4" },
+    { "id": 3, "domain": "sleep",         "title": "寝つきが悪い、途中で目が覚める、または逆に眠り過ぎる", "options": "freq4" },
+    { "id": 4, "domain": "energy",        "title": "疲れた感じがする、または気力がない", "options": "freq4" },
+    { "id": 5, "domain": "appetite",      "title": "あまり食欲がない、または食べ過ぎる", "options": "freq4" },
+    { "id": 6, "domain": "self",          "title": "自分はダメな人間だ、人生の敗北者だと気に病む、または自分自身あるいは家族に申し訳ないと感じる", "options": "freq4" },
+    { "id": 7, "domain": "concentration", "title": "新聞を読む、またはテレビを見ることなどに集中することが難しい", "options": "freq4" },
+    { "id": 8, "domain": "psychomotor",   "title": "他人が気づくぐらいに動きや話し方が遅くなる、あるいは反対に、そわそわしたり、落ち着かず、ふだんよりも動き回ることがある", "options": "freq4" },
+    { "id": 9, "domain": "suicide",       "title": "死んだ方がましだ、あるいは自分を何らかの方法で傷つけようと思ったことがある", "crisis": { "minScore": 1 }, "options": "freq4" }
+  ],
+  "scoring": {
+    "method": "sum",
+    "maxScore": 27
+  },
+  "severity": [
+    { "max": 4,  "key": "minimal",    "label": "なし〜最小",   "color": "var(--c-normal)",   "advice": "抑うつ症状はごく軽微です。引き続きご自身の心身の変化に気を配ってお過ごしください。" },
+    { "max": 9,  "key": "mild",       "label": "軽度",         "color": "var(--c-mild)",     "advice": "軽度の抑うつ症状が疑われます。経過を観察し、症状が2週間以上続く場合は専門機関へのご相談をおすすめします。" },
+    { "max": 14, "key": "moderate",   "label": "中等度",       "color": "var(--c-moderate)", "advice": "中等度の抑うつ症状が疑われます。心療内科・精神科などの医療機関へのご相談をおすすめします。" },
+    { "max": 19, "key": "modsevere",  "label": "中等度〜重度", "color": "var(--c-severe)",   "advice": "中等度〜重度の抑うつ症状が疑われます。早めに医療機関を受診してください。" },
+    { "max": 27, "key": "severe",     "label": "重度",         "color": "var(--c-extreme)",  "advice": "重度の抑うつ症状が疑われます。できるだけ早く医療機関を受診してください。身近な方のサポートも得てください。" }
+  ]
+}
