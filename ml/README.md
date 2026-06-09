@@ -48,11 +48,16 @@ python -m pip install uv
 python -m uv venv ml/.venv --python 3.12
 python -m uv pip install --python ml/.venv mediapipe opencv-python
 
-# 全セッションを抽出（重い: 動画1本あたり数分）。再実行は --force
+# 満血版（推奨）: ネイティブfps + 478点(float16 npz) + 4並列。10本 ~1.2h / ~0.7GB
+ml/.venv/Scripts/python.exe ml/extract_faces.py --fps 0 --landmarks --workers 4 --force
+# 軽量版: 15fps・blendshapeのみ（相位集約には十分）
 ml/.venv/Scripts/python.exe ml/extract_faces.py --fps 15
 # テスト: 1本を先頭15秒だけ
-ml/.venv/Scripts/python.exe ml/extract_faces.py --sessions <name> --max-seconds 15
+ml/.venv/Scripts/python.exe ml/extract_faces.py --sessions <name> --fps 0 --max-seconds 15
 ```
+
+`--fps 0`=ネイティブ（全フレーム, 微表情/瞬目を保持）。`--landmarks`=478×3 を `<session>.points.npz`
+(float16) に保存（build_dataset は blendshape を使うので必須ではない・将来の幾何特徴用）。`--workers N`=並列。
 
 抽出後 `build_dataset.py` が `sync.recorderStartIso` でフレーム t（動画時間）を壁時計に直し、
 phases の窓に割当てて**相位別の顔特徴**を算出（`face_<phase>_*`）+ 反応性差分（`face_react_*`）。
