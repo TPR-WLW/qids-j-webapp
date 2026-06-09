@@ -92,8 +92,91 @@ def _iso_ms(iso: Optional[str]) -> Optional[float]:
         return None
 
 
+def _points_npz(session: str) -> Optional[Path]:
+    p = DATA_DIR / (session + ".points.npz")
+    return p if p.exists() else None
+
+
+# MediaPipe FaceMesh(478点)の代表的インデックス
+_IDX = dict(
+    eyeL=(33, 160, 158, 133, 153, 144), eyeR=(362, 385, 387, 263, 373, 380),
+    mouthL=61, mouthR=291, lipTop=13, lipBot=14,
+    browL=105, browR=334, eyeUpL=159, eyeUpR=386, innerBrowL=55, innerBrowR=285,
+    outerEyeL=33, outerEyeR=263,
+)
+
+
+def geometry_features(d: dict[str, Any], npz_path: Path) -> dict[str, Any]:
+    """478 特徴点から幾何特徴（EAR/MAR/口角弧/眉高/眉間）を相位別に算出。numpy 必須。"""
+    try:
+        import numpy as np
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        z = np.load(npz_path)
+        ts = np.asarray(z["t"], dtype=float)
+        pts = np.asarray(z["points"], dtype=np.float32)  # (M,478,3)
+    except Exception:  # noqa: BLE001
+        return {}
+    base = _iso_ms((d.get("sync") or {}).get("recorderStartIso"))
+    phases = d.get("phases") or {}
+    if base is None or not phases or ts.size == 0 or pts.shape[0] != ts.size:
+        return {}
+
+    x = pts[:, :, 0]; y = pts[:, :, 1]
+    def D(a, b):
+        return np.hypot(x[:, a] - x[:, b], y[:, a] - y[:, b])
+    iod = np.maximum(D(_IDX["outerEyeL"], _IDX["outerEyeR"]), 1e-6)
+    eL = _IDX["eyeL"]; eR = _IDX["eyeR"]
+    ear_l = (D(eL[1], eL[5]) + D(eL[2], eL[4])) / (2 * np.maximum(D(eL[0], eL[3]), 1e-6))
+    ear_r = (D(eR[1], eR[5]) + D(eR[2], eR[4])) / (2 * np.maximum(D(eR[0], eR[3]), 1e-6))
+    # 視線(虹彩 468/473 の眼内相対位置)。眼幅で正規化。
+    ewL = np.maximum(np.abs(x[:, 33] - x[:, 133]), 1e-6)
+    ewR = np.maximum(np.abs(x[:, 263] - x[:, 362]), 1e-6)
+    gaze_h = ((x[:, 468] - (x[:, 33] + x[:, 133]) / 2) / ewL + (x[:, 473] - (x[:, 263] + x[:, 362]) / 2) / ewR) / 2
+    gaze_v = ((y[:, 468] - (y[:, 159] + y[:, 145]) / 2) / ewL + (y[:, 473] - (y[:, 386] + y[:, 374]) / 2) / ewR) / 2
+    # 顔の左右非対称性: 対称ペアの正中線(鼻尖1)からの距離差。
+    pairs = [(61, 291), (33, 263), (105, 334), (50, 280)]
+    mid = x[:, 1]
+    asym = np.mean([np.abs(np.abs(x[:, L] - mid) - np.abs(x[:, R] - mid)) for (L, R) in pairs], axis=0) / iod
+    feats_frame = {
+        "ear": (ear_l + ear_r) / 2,
+        "mar": D(_IDX["lipTop"], _IDX["lipBot"]) / np.maximum(D(_IDX["mouthL"], _IDX["mouthR"]), 1e-6),
+        "smilecurve": (y[:, _IDX["lipTop"]] - (y[:, _IDX["mouthL"]] + y[:, _IDX["mouthR"]]) / 2) / iod,
+        "browraise": ((y[:, _IDX["eyeUpL"]] - y[:, _IDX["browL"]]) + (y[:, _IDX["eyeUpR"]] - y[:, _IDX["browR"]])) / 2 / iod,
+        "browgap": D(_IDX["innerBrowL"], _IDX["innerBrowR"]) / iod,
+        "gazeh": gaze_h, "gazev": gaze_v, "asym": asym,
+    }
+    wall = base + ts
+    out: dict[str, Any] = {}
+    per_phase: dict[str, dict[str, float]] = {}
+    for k in ("rest_pre", "task", "rest_post"):
+        p = phases.get(k) or {}
+        a, b = p.get("startTs"), p.get("endTs")
+        if a is None:
+            continue
+        m = (wall >= a) & (wall < (b if b is not None else np.inf))
+        if not m.any():
+            continue
+        per_phase[k] = {}
+        for name, arr in feats_frame.items():
+            v = float(np.nanmean(arr[m]))
+            out[f"geo_{k}_{name}"] = round(v, 5)
+            per_phase[k][name] = v
+        # 視線の不安定さ(視線そらし/動揺): 虹彩位置の std
+        gvar = float(np.nanstd(gaze_h[m]) + np.nanstd(gaze_v[m]))
+        out[f"geo_{k}_gazevar"] = round(gvar, 5)
+        per_phase[k]["gazevar"] = gvar
+    if "task" in per_phase and "rest_pre" in per_phase:
+        for name in list(feats_frame) + ["gazevar"]:
+            if name in per_phase["task"] and name in per_phase["rest_pre"]:
+                out[f"geo_react_{name}"] = round(per_phase["task"][name] - per_phase["rest_pre"][name], 5)
+    return out
+
+
 # 抑うつ関連の顔指標（表情の表出減弱・笑顔減少などを意識した最小セット）
-FACE_REACT_KEYS = ("expressivity", "blink", "smile", "browDown", "jawOpen", "head_move")
+FACE_REACT_KEYS = ("expressivity", "blink", "smile", "browDown", "jawOpen", "head_move",
+                   "expr_asym", "facial_velocity", "micro_rate")
 
 
 def facial_features(d: dict[str, Any], faces_path: Path) -> dict[str, Any]:
@@ -160,6 +243,41 @@ def facial_features(d: dict[str, Any], faces_path: Path) -> dict[str, Any]:
         poses = [fr["pose"] for fr in face if fr.get("pose")]
         if len(poses) > 1:
             feats["head_move"] = round(sum(_st.pstdev([p[j] for p in poses]) for j in range(3)), 3)
+
+        # 表情の左右非対称性: 対の blendshape の |L-R| 平均（抑うつで左右差↑の報告）
+        ASYM = [("mouthSmileLeft", "mouthSmileRight"), ("mouthFrownLeft", "mouthFrownRight"),
+                ("browDownLeft", "browDownRight"), ("cheekSquintLeft", "cheekSquintRight"),
+                ("eyeSquintLeft", "eyeSquintRight"), ("mouthDimpleLeft", "mouthDimpleRight")]
+        av = []
+        for fr in face:
+            bs = fr["bs"]
+            ds = [abs(bs[nidx[l]] - bs[nidx[r]]) for (l, r) in ASYM if l in nidx and r in nidx]
+            if ds:
+                av.append(sum(ds) / len(ds))
+        if av:
+            feats["expr_asym"] = round(sum(av) / len(av), 5)
+
+        # 微表情/微動: ネイティブfps のフレーム間変化（速い動きほど大）+ 短い山の頻度
+        EMO = ["browInnerUp", "browDownLeft", "browDownRight", "mouthFrownLeft", "mouthFrownRight",
+               "mouthSmileLeft", "mouthSmileRight", "noseSneerLeft", "noseSneerRight"]
+        emo_idx = [nidx[n] for n in EMO if n in nidx]
+        vel, mag = [], []
+        for i in range(len(face)):
+            mag.append(sum(face[i]["bs"][j] for j in emo_idx))
+            if i > 0:
+                dt = (face[i]["t"] - face[i - 1]["t"]) / 1000.0
+                if 0 < dt < 0.5:
+                    a, b = face[i]["bs"], face[i - 1]["bs"]
+                    vel.append(sum(abs(a[j] - b[j]) for j in range(len(a))) / dt)
+        if vel:
+            feats["facial_velocity"] = round(sum(vel) / len(vel), 4)   # 顔の動きの速さ（微動）
+        # 短い山（~<150ms で立ち上がり立ち下がり）= 微表情らしい瞬時活性の頻度/秒
+        peaks = sum(1 for i in range(2, len(mag) - 2)
+                    if mag[i] > mag[i - 2] + 0.05 and mag[i] > mag[i + 2] + 0.05
+                    and mag[i] >= mag[i - 1] and mag[i] >= mag[i + 1])
+        dur = (face[-1]["t"] - face[0]["t"]) / 1000.0 if len(face) > 1 else 0
+        if dur > 0:
+            feats["micro_rate"] = round(peaks / dur, 4)
         return feats
 
     pf = {k: phase_feats(buckets[k]) for k in buckets}
@@ -242,10 +360,13 @@ def build_row(path: Path) -> dict[str, Any]:
         for k, v in _delta(post, pre, DELTA_KEYS).items():
             row[f"recov_{k}"] = v
 
-    # --- 顔特徴（landmark があれば相位別に結合）---
+    # --- 顔特徴（blendshape）+ 幾何特徴（478点）を相位別に結合 ---
     fp = _faces_path(d.get("session", ""))
     if fp is not None:
         row.update(facial_features(d, fp))
+    gp = _points_npz(d.get("session", ""))
+    if gp is not None:
+        row.update(geometry_features(d, gp))
 
     # --- QC 判定 ---
     rmssd = row.get("all_rmssd_ms")
