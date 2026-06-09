@@ -345,6 +345,12 @@
       note:      ($('subjNote').value || '').trim()
     };
   }
+  // 氏名/ID に非 ASCII（漢字・かな等）が含まれたらローマ字推奨のヒントを表示（非強制）
+  $('subjId')?.addEventListener('input', (e) => {
+    const hint = $('subjIdHint');
+    if (hint) hint.style.display = /[^\x00-\x7F]/.test(e.target.value) ? '' : 'none';
+  });
+
   $('subjectNext')?.addEventListener('click', async () => {
     const subj = collectSubject();
     if (!subj.id) { alert('氏名 / ID を入力してください（必須）。'); $('subjId').focus(); return; }

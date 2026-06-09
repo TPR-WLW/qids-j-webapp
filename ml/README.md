@@ -36,12 +36,29 @@ python ml/build_dataset.py     # data/*.session.json → data/dataset.csv（pand
   解析側に**異位搏補正**（生理範囲外 RRI の除去/補間）を入れる。
 - `usable_for_ecg_ml=0` の行は**解析から除外**すること。
 
-## B. 顔特徴の抽出（未実装の隙間）
+## B. 顔特徴の抽出（`extract_faces.py`）
 
-現状、landmark 抽出は `analyze.html` での**手動/単発**で、セッション毎ファイルとして `data/` に残らない。
-ML では全動画を**バッチ抽出**して `data/<session>.landmarks.json(.gz)` を作る必要がある（要 MediaPipe）。
-抽出後、相位別の顔特徴（blendshape の mean/std/変化率・瞬目率・頭部運動量、**中性基線/ rest_pre で基線補正**）を
-`build_dataset.py` に結合する（`_faces_path` と `has_faces` が結合点）。
+各 `data/<session>.mp4` を MediaPipe FaceLandmarker に通し、フレーム毎に
+**52 ブレンドシェイプ + 頭部姿勢(yaw/pitch/roll)** を `data/<session>.landmarks.json.gz` に保存する。
+
+MediaPipe は Python 3.9–3.12 のみ対応（本機の 3.14 は不可）。uv で隔離した 3.12 venv を使う:
+
+```bash
+python -m pip install uv
+python -m uv venv ml/.venv --python 3.12
+python -m uv pip install --python ml/.venv mediapipe opencv-python
+
+# 全セッションを抽出（重い: 動画1本あたり数分）。再実行は --force
+ml/.venv/Scripts/python.exe ml/extract_faces.py --fps 15
+# テスト: 1本を先頭15秒だけ
+ml/.venv/Scripts/python.exe ml/extract_faces.py --sessions <name> --max-seconds 15
+```
+
+抽出後 `build_dataset.py` が `sync.recorderStartIso` でフレーム t（動画時間）を壁時計に直し、
+phases の窓に割当てて**相位別の顔特徴**を算出（`face_<phase>_*`）+ 反応性差分（`face_react_*`）。
+特徴: 表出量 expressivity（全 blendshape の時間 std 平均）・瞬目 blink・笑顔 smile・眉 browInnerUp/browDown・
+開口 jawOpen・しかめ mouthFrown・頭部運動 head_move・追跡率 track_rate。**抑うつでの表出減弱**を意識した最小セット。
+`rest_pre` を基線とした task 反応性が判別の主軸。
 
 ## D. 学習（小サンプル・二値）の指針
 

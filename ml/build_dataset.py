@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import csv
 import glob
+import gzip
 import json
+import statistics as _st
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -75,11 +78,100 @@ def _label(survey_id: str, total: Optional[float]) -> Optional[int]:
 
 
 def _faces_path(session: str) -> Optional[Path]:
-    for ext in (".landmarks.json", ".landmarks.json.gz", ".json.gz"):
+    for ext in (".landmarks.json.gz", ".landmarks.json"):
         p = DATA_DIR / (session + ext)
         if p.exists():
             return p
     return None
+
+
+def _iso_ms(iso: Optional[str]) -> Optional[float]:
+    try:
+        return datetime.fromisoformat(iso).timestamp() * 1000.0
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# 抑うつ関連の顔指標（表情の表出減弱・笑顔減少などを意識した最小セット）
+FACE_REACT_KEYS = ("expressivity", "blink", "smile", "browDown", "jawOpen", "head_move")
+
+
+def facial_features(d: dict[str, Any], faces_path: Path) -> dict[str, Any]:
+    """landmark を相位窓（壁時計）に対応づけ、相位別の顔特徴 + 反応性差分を返す。
+
+    フレーム t（動画 ms）+ sync.recorderStartIso = 壁時計 → phases の窓に割当てる。
+    """
+    try:
+        with gzip.open(faces_path, "rt", encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:  # noqa: BLE001
+        return {"has_faces": 1}
+    meta = doc.get("meta") or {}
+    names = meta.get("blendshape_names") or []
+    nidx = {n: i for i, n in enumerate(names)}
+    base = _iso_ms((d.get("sync") or {}).get("recorderStartIso"))
+    phases = d.get("phases") or {}
+
+    out: dict[str, Any] = {"has_faces": 1, "face_track_rate_overall": meta.get("track_rate")}
+    if not names or base is None or not phases:
+        return out
+
+    buckets: dict[str, list] = {"rest_pre": [], "task": [], "rest_post": []}
+    for fr in doc.get("frames", []):
+        wall = base + fr.get("t", 0)
+        for k in buckets:
+            p = phases.get(k) or {}
+            a, b = p.get("startTs"), p.get("endTs")
+            if a is not None and a <= wall < (b if b is not None else float("inf")):
+                buckets[k].append(fr)
+                break
+
+    def mean_of(face_frames, *bs_names):
+        vals = []
+        for fr in face_frames:
+            bs = fr.get("bs")
+            if not bs:
+                continue
+            xs = [bs[nidx[n]] for n in bs_names if n in nidx]
+            if xs:
+                vals.append(sum(xs) / len(xs))
+        return round(_st.mean(vals), 5) if vals else None
+
+    def phase_feats(frames):
+        face = [fr for fr in frames if fr.get("face") and fr.get("bs")]
+        if not face:
+            return {}
+        # 表出量: 各 blendshape の時間方向 std の平均（顔の動きの大きさ）
+        stds = []
+        for i in range(len(names)):
+            col = [fr["bs"][i] for fr in face if fr.get("bs")]
+            if len(col) > 1:
+                stds.append(_st.pstdev(col))
+        feats = {
+            "track_rate": round(len(face) / len(frames), 4) if frames else None,
+            "expressivity": round(sum(stds) / len(stds), 5) if stds else None,
+            "blink": mean_of(face, "eyeBlinkLeft", "eyeBlinkRight"),
+            "smile": mean_of(face, "mouthSmileLeft", "mouthSmileRight"),
+            "browInnerUp": mean_of(face, "browInnerUp"),
+            "browDown": mean_of(face, "browDownLeft", "browDownRight"),
+            "jawOpen": mean_of(face, "jawOpen"),
+            "mouthFrown": mean_of(face, "mouthFrownLeft", "mouthFrownRight"),
+        }
+        poses = [fr["pose"] for fr in face if fr.get("pose")]
+        if len(poses) > 1:
+            feats["head_move"] = round(sum(_st.pstdev([p[j] for p in poses]) for j in range(3)), 3)
+        return feats
+
+    pf = {k: phase_feats(buckets[k]) for k in buckets}
+    for k, fv in pf.items():
+        for name, v in fv.items():
+            out[f"face_{k}_{name}"] = v
+    # reactivity = task - rest_pre
+    for fk in FACE_REACT_KEYS:
+        a, b = pf["task"].get(fk), pf["rest_pre"].get(fk)
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            out[f"face_react_{fk}"] = round(a - b, 5)
+    return out
 
 
 def _delta(a: dict[str, Any], b: dict[str, Any], keys: tuple[str, ...]) -> dict[str, float]:
@@ -149,6 +241,11 @@ def build_row(path: Path) -> dict[str, Any]:
             row[f"react_{k}"] = v
         for k, v in _delta(post, pre, DELTA_KEYS).items():
             row[f"recov_{k}"] = v
+
+    # --- 顔特徴（landmark があれば相位別に結合）---
+    fp = _faces_path(d.get("session", ""))
+    if fp is not None:
+        row.update(facial_features(d, fp))
 
     # --- QC 判定 ---
     rmssd = row.get("all_rmssd_ms")
