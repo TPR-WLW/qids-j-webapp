@@ -229,8 +229,19 @@
     }
   };
 
+  // 被験者 ID をファイル名に使える安全な文字列へ。日本語名など Unicode の文字/数字は
+  // 残し（読みやすさのため）、ファイル名に使えない記号・空白のみ '_' に置換する。
+  function sanitizeId(raw) {
+    const s = (raw || '').normalize('NFC')
+      .replace(/[^\p{L}\p{N}_-]+/gu, '_')  // 文字・数字・_・- 以外を _
+      .replace(/_+/g, '_')                  // 連続 _ を 1 つに
+      .replace(/^_+|_+$/g, '')              // 前後の _ を除去
+      .slice(0, 40);
+    return s || 'subj';
+  }
+
   function makeSessionName() {
-    const id = (state.subject?.id || 'subj').replace(/[^\w\-]+/g, '_').slice(0, 40) || 'subj';
+    const id = sanitizeId(state.subject?.id);
     const sid = state.survey ? state.survey.id : 'survey';
     return id + '_' + sid + '_' + timestamp();
   }
