@@ -13,6 +13,18 @@
 
 ---
 
+## 計測デバイス（心率: ECG / PPG）
+
+回答中の心率・HRV を、被験者情報画面で選んだデバイスで記録できる（**PPG のみ / myBeat のみ / 両方**）。
+
+- **myBeat（ECG・胸部）** — 本地サーバ `server.py`（Windows / UTWS SDK）経由。
+- **PPG（ESP32-C6 + MAX30102・指先）** — ブラウザ **Web Bluetooth** 直結（Chrome / Edge）。固件は `xiao-esp32c6-max30102-hrv` をそのまま使用、PPG のみなら静的配信でも可。
+
+両者は同一タイムラインで記録され、設問別・安静相別の HRV まで自動算出・保存される。
+詳細は [`docs/PPG_INTEGRATION_PLAN.md`](./docs/PPG_INTEGRATION_PLAN.md) ／ [`docs/PROTOCOL.md`](./docs/PROTOCOL.md)。
+
+---
+
 ## 主な機能
 
 - **複数の質問票に対応** — 最初の画面で選択（現在 **QIDS-J** / **PHQ-9**）。題库は `surveys/*.json` で定義し、追加は JSON を置くだけ

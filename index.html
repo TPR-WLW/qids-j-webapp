@@ -74,6 +74,15 @@
     .pw-msg { margin-top: 6px; min-height: 1em; }
     .pw-msg.err { color: #b42318; }
     .pw-msg.ok { color: #1f7a4d; }
+    /* 計測デバイス選択 / PPG コントロール */
+    .device-select { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid #dfe6ec; border-radius: 10px; background: #f7fafc; }
+    .device-select .check { align-items: flex-start; }
+    .ppg-controls { margin-top: 4px; padding: 10px 12px; border: 1px dashed #cdd6dd; border-radius: 8px; background: #fff; }
+    .ppg-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .ppg-wave { width: 100%; max-width: 360px; height: 48px; margin-top: 8px; background: #0f1117; border-radius: 6px; display: block; }
+    /* 実時間叠加層：複数源 */
+    .ecg-ov-src + .ecg-ov-src { margin-top: 6px; }
+    .ecg-ov-sep { height: 1px; background: rgba(255,255,255,.15); margin: 6px 0; }
   </style>
 </head>
 <body>
@@ -95,11 +104,9 @@
     <span id="srvText">サーバ確認中…</span>
   </div>
 
-  <!-- ECG 実時間オーバーレイ（回答中に左上に表示） -->
-  <div id="ecgOverlay" class="ecg-overlay hidden" aria-hidden="true" aria-label="ECG 実時間表示">
-    <div class="ecg-ov-row"><span class="ecg-ov-dot" id="ovDot"></span><span class="ecg-ov-label">HR</span><span id="ovHr" class="ecg-ov-val">—</span><span class="ecg-ov-unit">bpm</span></div>
-    <div class="ecg-ov-row small"><span id="ovQuality">信号 —</span></div>
-    <div class="ecg-ov-row small"><span id="ovHrv">RMSSD — / SDNN —</span></div>
+  <!-- 心拍 実時間オーバーレイ（回答中に左上に表示・有効な源を HeartHub が描画） -->
+  <div id="ecgOverlay" class="ecg-overlay hidden" aria-hidden="true" aria-label="心拍 実時間表示">
+    <div class="ecg-ov-row small"><span>計測待機中…</span></div>
   </div>
 
   <!-- ECG ペアリング部件（設定中に右上に表示） -->
@@ -143,6 +150,25 @@
         <h2>検査の種類</h2>
         <label class="extract-field" style="margin-bottom:20px"><span>質問票を選択</span>
           <select id="surveySelect" class="select"></select></label>
+
+        <h2>計測デバイス<span class="tiny muted" style="font-weight:400">（任意・複数選択可）</span></h2>
+        <div class="device-select" style="margin-bottom:20px">
+          <label class="check"><input type="checkbox" id="devEcg">
+            <span><strong>myBeat（ECG）</strong> — 胸部装着・心電。<span class="tiny muted">本地サーバ（start.bat / Windows）が必要</span></span></label>
+          <label class="check"><input type="checkbox" id="devPpg">
+            <span><strong>PPG センサー（XIAO-HR）</strong> — 指先・脈波。<span class="tiny muted">Bluetooth 直結（Chrome / Edge）</span></span></label>
+
+          <div id="ppgControls" class="ppg-controls" style="display:none">
+            <div class="ppg-row">
+              <button type="button" id="ppgConnectBtn" class="btn btn-outline btn-sm">PPG 接続</button>
+              <button type="button" id="ppgTestBtn" class="btn btn-ghost btn-sm">信号テスト</button>
+              <span id="ppgStatus" class="tiny muted">未接続</span>
+            </div>
+            <canvas id="ppgWave" width="320" height="48" class="ppg-wave" aria-label="PPG 脈波プレビュー"></canvas>
+            <p class="tiny muted" style="margin:4px 0 0">※「接続」→ <strong>XIAO-HR</strong> を選択 → 指先を光窓にやさしく当てて静止。両方選ぶと myBeat と PPG を同時記録します。</p>
+          </div>
+          <p class="tiny muted" style="margin:6px 0 0">心拍 / HRV を測定しない場合は、両方オフのままでも回答できます。</p>
+        </div>
 
         <h2>被験者情報</h2>
         <div class="subject-grid">
@@ -228,6 +254,7 @@
                 </div>
               </div>
             </li>
+            <li><strong>① -別 PPG センサー（指先・任意）</strong>：myBeat の代わり/併用として使えます。前の画面で「PPG」を選び「接続」→ <strong>XIAO-HR</strong> を選択し、指先を光窓にやさしく当てて静止してください（Chrome / Edge）。</li>
             <li><strong>② カメラ（頭部の位置）</strong>：顔がカメラ映像の<strong>中央</strong>に来るように座り、画面を正面から見てください。顔全体が枠内に収まる距離を保ち、測定中は大きく動かないようにしてください。</li>
           </ul>
           <p><strong>実験の流れ</strong></p>
@@ -523,6 +550,10 @@
 
   <script src="js/survey.js"></script>
   <script src="js/recorder.js"></script>
+  <!-- 心率源（順不同でも可。HeartHub は呼出時に各源を参照） -->
+  <script src="js/heart/ecg.js"></script>
+  <script src="js/heart/ppg.js"></script>
+  <script src="js/heart/hub.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

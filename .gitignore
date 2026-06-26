@@ -36,3 +36,6 @@ data/
 # Python virtual env for face extraction (ml/extract_faces.py)
 ml/.venv/
 .venv/
+
+# Editor/agent tooling state (oh-my-claudecode)
+.omc/

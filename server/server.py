@@ -516,6 +516,51 @@ class AcquisitionManager:
             raise FileNotFoundError(name)
         return path
 
+    @staticmethod
+    def _ppg_beats_to_rows(beats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """PPG 心拍 [{t:epochMs, rri}] → ECG 同構の RRI 行（既存 HRV 解析を再利用）。
+
+        host_time_iso は墙钟（Date.now() 由来）なので、ECG と同じく per_question_hrv /
+        build_phases で同じ時間窓に切り出せる。ecg_mode_label='rri', sampling_freq=1。
+        """
+        rows: list[dict[str, Any]] = []
+        for i, b in enumerate(beats):
+            t = b.get("t")
+            rri = b.get("rri")
+            if t is None or rri is None:
+                continue
+            try:
+                iso = datetime.fromtimestamp(float(t) / 1000.0).astimezone().isoformat(timespec="milliseconds")
+            except Exception:  # noqa: BLE001
+                continue
+            rows.append({
+                "host_time_iso": iso,
+                "ecg_raw": rri,
+                "ecg_mode_label": "rri",
+                "sampling_freq": 1,
+                "packet_id": i,
+            })
+        return rows
+
+    def _write_ppg_csv(self, session: str, rows: list[dict[str, Any]]) -> None:
+        """RRI 行を再解析可能な CSV で保存（load_rows + hrv_metrics でそのまま読める）。"""
+        lines = ["host_time_iso,ecg_raw,ecg_mode_label,sampling_freq,packet_id"]
+        for r in rows:
+            lines.append(f'{r["host_time_iso"]},{r["ecg_raw"]},rri,1,{r["packet_id"]}')
+        (self.data_dir / (session + ".ppg.csv")).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _write_ppg_raw_csv(self, session: str, raw: dict[str, Any]) -> int:
+        """生 IR/RED 波形（100Hz）を CSV 保存。検出器の後追い再調整用。"""
+        idx = raw.get("idx") or []
+        ir = raw.get("ir") or []
+        red = raw.get("red") or []
+        n = len(idx)
+        out_lines = ["idx,ir,red"]
+        for i in range(n):
+            out_lines.append(f"{idx[i]},{ir[i] if i < len(ir) else ''},{red[i] if i < len(red) else ''}")
+        (self.data_dir / (session + ".ppg_raw.csv")).write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+        return n
+
     def save_session(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Auto-save the whole measurement: combined session.json (+answers.csv).
 
@@ -541,11 +586,31 @@ class AcquisitionManager:
             ecg["respiration"] = respiration(rows)
             ecg["autonomic"] = autonomic_state(rows)
 
+        # ---- PPG（ブラウザ Web Bluetooth 経由・ペイロードで受領）----
+        # ECG はサーバが自身の CSV を持つが、PPG はブラウザで算出するため心拍/生波形を回送する。
+        ppg_payload = payload.get("ppg") or {}
+        ppg_beats = ppg_payload.get("beats") or []          # [{t: epochMs, rri}]
+        ppg_raw = ppg_payload.get("raw") or {}              # {idx:[], ir:[], red:[]}
+        ppg_rows = self._ppg_beats_to_rows(ppg_beats)
+        ppg: Optional[dict[str, Any]] = None
+        if ppg_beats or ppg_raw.get("idx"):
+            ppg = {"beats": len(ppg_beats), "csv": None, "raw_csv": None, "raw_samples": 0}
+            if ppg_rows:
+                self._write_ppg_csv(session, ppg_rows)
+                ppg["csv"] = session + ".ppg.csv"
+                ppg["hrv"] = hrv_metrics(ppg_rows)
+                ppg["frequency"] = frequency_hrv(ppg_rows)
+                ppg["autonomic"] = autonomic_state(ppg_rows)
+            if ppg_raw.get("idx"):
+                ppg["raw_samples"] = self._write_ppg_raw_csv(session, ppg_raw)
+                ppg["raw_csv"] = session + ".ppg_raw.csv"
+
         out = {
             "session": session,
             "saved": datetime.now().isoformat(timespec="seconds"),
             "survey": payload.get("survey"),
             "subject": payload.get("subject") or {},
+            "sources": payload.get("sources"),
             "answers": payload.get("answers"),
             "result": payload.get("result"),
             "qids_events": payload.get("events") or [],
@@ -555,6 +620,10 @@ class AcquisitionManager:
             "per_question_hrv": per_question_hrv(rows, segments) if rows else [],
             "rest_hrv": per_question_hrv(rows, rest_segments) if rows else [],
             "ecg": ecg,
+            "ppg": ppg,
+            "ppg_per_question_hrv": per_question_hrv(ppg_rows, segments) if ppg_rows else [],
+            "ppg_rest_hrv": per_question_hrv(ppg_rows, rest_segments) if ppg_rows else [],
+            "ppg_phases": build_phases(ppg_rows, segments, rest_segments) if ppg_rows else {},
             "video": payload.get("video"),
             "camera": payload.get("camera"),
             "sync": payload.get("sync"),
@@ -576,14 +645,15 @@ class AcquisitionManager:
             pass
 
         files = [p.name for p in self.data_dir.glob(session + ".*")]
-        self.log("info", f"会话已自动保存：{session}（{len(files)} 个文件，{len(rows)} 条ECG）")
+        self.log("info", f"会话已自动保存：{session}（{len(files)} 个文件，ECG {len(rows)} 条，PPG {len(ppg_beats)} 拍）")
         return {
             "saved": True,
             "session": session,
             "dir": str(self.data_dir),
             "files": files,
             "ecg_samples": len(rows),
-            "per_question": len(out["per_question_hrv"]),
+            "ppg_beats": len(ppg_beats),
+            "per_question": len(out["per_question_hrv"]) or len(out["ppg_per_question_hrv"]),
         }
 
     def stop(self) -> dict[str, Any]:

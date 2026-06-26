@@ -115,119 +115,18 @@
   });
 
   // ============================================================
-  //   ECG integration (local server, same-origin /api)
+  //   心率源（ECG=server / PPG=Web Bluetooth）— HeartHub が調停
+  //   ・EcgSource: 既存の /api/* 経路（myBeat / WHS-1）
+  //   ・PpgSource: Web Bluetooth（XIAO-HR / MAX30102）
+  //   ・HeartHub:  有効な源へ start/stop/保存を分配・共有イベント時間線・叠加層
   // ============================================================
-  const STATE_LABEL_JA = { relaxed:'リラックス', stressed:'ストレス', balanced:'バランス', active:'活動的', unknown:'—' };
-
-  function showOverlay(show) {
-    const ov = $('ecgOverlay'); if (!ov) return;
-    ov.classList.toggle('hidden', !show);
-    ov.setAttribute('aria-hidden', show ? 'false' : 'true');
-  }
-
-  const ECG = {
-    active: false, session: null, startWall: null,
-    events: [], hrTimer: null, hrvTimer: null,
-
-    logEvent(type, q) { this.events.push({ q: (q == null ? state.current : q), type, ts: Date.now() }); },
-
-    async deviceInfo() {
-      try { return await (await fetch('/api/device-info')).json(); } catch (e) { return { error: String(e) }; }
-    },
-
-    async pair(ecgMode) {
-      try {
-        return await (await fetch('/api/pair', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ecg_mode: ecgMode || '' })
-        })).json();
-      } catch (e) { return { error: String(e) }; }
-    },
-
-    async start(sessionName) {
-      this.session = sessionName;
-      try {
-        const r = await (await fetch('/api/start', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ output: sessionName, duration: 0 })
-        })).json();
-        if (r.error) { console.warn('[ECG] start failed:', r.error); this.active = false; return false; }
-        this.startWall = Date.now();
-        this.active = true;
-        showOverlay(true);
-        this._startPolling();
-        return true;
-      } catch (e) { console.warn('[ECG] start error', e); this.active = false; return false; }
-    },
-
-    _startPolling() {
-      this._stopPolling();
-      this.hrTimer  = setInterval(() => this._pollHr(), 1000);
-      this.hrvTimer = setInterval(() => this._pollHrv(), 5000);
-      this._pollHr(); this._pollHrv();
-    },
-    _stopPolling() {
-      if (this.hrTimer) clearInterval(this.hrTimer); this.hrTimer = null;
-      if (this.hrvTimer) clearInterval(this.hrvTimer); this.hrvTimer = null;
-    },
-
-    async _pollHr() {
-      try {
-        const s = await (await fetch('/api/status')).json();
-        const hr = (s.last && s.last.hr_bpm != null) ? s.last.hr_bpm : null;
-        const ageOk = s.last != null;
-        const ovHr = $('ovHr'); if (ovHr) ovHr.textContent = hr != null ? Math.round(hr) : '—';
-        const dot = $('ovDot'); if (dot) dot.classList.toggle('bad', !ageOk || hr == null);
-        const q = $('ovQuality'); if (q) q.textContent = s.lowbattery ? '低電池 ⚠' : (ageOk ? '受信中' : '受信なし');
-      } catch (e) { /* ignore transient */ }
-    },
-    async _pollHrv() {
-      try {
-        const r = await (await fetch('/api/analysis?window=120')).json();
-        const au = r.autonomic || {};
-        const el = $('ovHrv');
-        if (el) {
-          if (au.ok) {
-            el.textContent = 'RMSSD ' + (au.rmssd_ms != null ? au.rmssd_ms.toFixed(0) : '—') +
-              ' · ' + (STATE_LABEL_JA[au.state_code] || '—');
-          } else { el.textContent = 'HRV 計測中…'; }
-        }
-      } catch (e) { /* ignore */ }
-    },
-
-    async stop() {
-      this._stopPolling();
-      if (this.active) { try { await fetch('/api/stop', { method: 'POST' }); } catch (e) {} }
-      this.active = false;
-      showOverlay(false);
-    },
-
-    buildSegments() {
-      const enters = this.events.filter(e => e.type === 'question_enter');
-      const segs = [];
-      for (let i = 0; i < enters.length; i++) {
-        const e = enters[i];
-        const end = (i + 1 < enters.length) ? enters[i + 1].ts : Date.now();
-        segs.push({ q: e.q, questionNumber: (e.q ?? 0) + 1, label: (state.survey?.questions[e.q]?.title || null), startTs: e.ts, endTs: end });
-      }
-      return segs;
-    },
-
-    // 安静時測定（前/後）の区間を rest_*_start/end イベントから組み立てる
-    buildRestSegments() {
-      const find = (t) => this.events.find(e => e.type === t);
-      const out = [];
-      const mk = (phase, label) => {
-        const s = find('rest_' + phase + '_start');
-        if (!s) return;
-        const e = find('rest_' + phase + '_end');
-        out.push({ q: phase, questionNumber: null, label, startTs: s.ts, endTs: e ? e.ts : null });
-      };
-      mk('pre', '安静（前）');
-      mk('post', '安静（後）');
-      return out;
-    }
-  };
+  EcgSource.init({ onLog: (lv, m) => console.info('[ECG]', m) });
+  PpgSource.init({ onLog: (lv, m) => console.info('[PPG]', m) });
+  HeartHub.init({
+    overlay:  $('ecgOverlay'),
+    survey:  () => state.survey,
+    current: () => state.current
+  });
 
   // 被験者 ID をファイル名に使える安全な文字列へ。日本語名など Unicode の文字/数字は
   // 残し（読みやすさのため）、ファイル名に使えない記号・空白のみ '_' に置換する。
@@ -249,9 +148,7 @@
   // Start ECG + reset the session timeline. Called when leaving the intro.
   async function beginSession() {
     state.sessionName = makeSessionName();
-    ECG.events = [];
-    ECG.logEvent('session_start', -1);
-    await ECG.start(state.sessionName);  // proceeds even if the device isn't ready
+    await HeartHub.begin(state.sessionName);  // 有効な心率源を起動（未接続でも続行）
   }
 
   // ============================================================
@@ -393,7 +290,7 @@
   async function pollServerBadge() { setServerBadge(await pingServer()); }
 
   async function refreshEcgWidget() {
-    const info = await ECG.deviceInfo();
+    const info = await EcgSource.deviceInfo();
     setServerBadge(!info.error);
     // ECG バックエンドが無い静的配信（GitHub Pages / http.server）では、
     // /ecg/ も /api/* も存在しないため ECG 関連 UI を丸ごと隠す（404 リンク回避）。
@@ -459,7 +356,7 @@
       try { await fetch('/api/stop', { method: 'POST' }); } catch (e) {}
       if (got > 0) {
         // 無線受信できた = ペアリング有効 → 記憶してラベルを更新
-        try { const di = await ECG.deviceInfo(); if (di.rrd_address) localStorage.setItem(PAIRED_KEY, di.rrd_address); } catch (e) {}
+        try { const di = await EcgSource.deviceInfo(); if (di.rrd_address) localStorage.setItem(PAIRED_KEY, di.rrd_address); } catch (e) {}
         await refreshEcgWidget();
         pwMsg('無線受信 OK ✓ ' + (hr != null ? ('HR ' + Math.round(hr) + ' bpm') : '') + '（' + got + ' サンプル）'
           + (hr != null && (hr < 40 || hr > 150) ? ' ※電極の接触をご確認ください' : ''), 'ok');
@@ -472,7 +369,7 @@
   $('pwRead')?.addEventListener('click', async () => { pwMsg('読み取り中…'); await refreshEcgWidget(); pwMsg(''); });
   $('pwPair')?.addEventListener('click', async () => {
     pwMsg('ペアリング中（USB 接続を確認）…');
-    const r = await ECG.pair($('pwEcgMode')?.value || '');
+    const r = await EcgSource.pair($('pwEcgMode')?.value || '');
     if (r.error) { pwMsg('失敗: ' + r.error, 'err'); return; }
     await refreshEcgWidget();
     pwMsg(r.matches ? 'ペアリング成功 ✓ USB を抜いて装着 → 無線受信テストで確認できます。'
@@ -483,10 +380,71 @@
   function updatePairWidgetVisibility() {
     const w = $('ecgPairWidget'); if (!w) return;
     const setup = screens.subject.classList.contains('active') || screens.intro.classList.contains('active');
-    const show = setup && ecgServerUp;   // ECG バックエンドが無いときは配対ピルも隠す
+    const show = setup && ecgServerUp && HeartHub.isEnabled('ecg');   // ECG 無効 or バックエンド無し → 隠す
     w.classList.toggle('hidden', !show);
     if (!show && pwPanel) pwPanel.classList.add('hidden');  // collapse when hidden
   }
+
+  // ---------- 心拍デバイス選択（PPG / myBeat / 両方・複数可）----------
+  const DEVICE_KEY = 'qids-j-heart-devices-v1';
+  const devEcg = $('devEcg');
+  const devPpg = $('devPpg');
+  const ppgControls   = $('ppgControls');
+  const ppgConnectBtn = $('ppgConnectBtn');
+  const ppgTestBtn    = $('ppgTestBtn');
+  const ppgStatus     = $('ppgStatus');
+  const ppgWave       = $('ppgWave');
+  let ppgWaveTimer = null;
+  if (ppgWave) PpgSource.attachCanvas(ppgWave);
+
+  function loadDeviceSelection() {
+    let sel = { ecg: false, ppg: false };
+    try { sel = { ...sel, ...JSON.parse(localStorage.getItem(DEVICE_KEY) || '{}') }; } catch (e) {}
+    if (devEcg) devEcg.checked = !!sel.ecg;
+    if (devPpg) devPpg.checked = !!sel.ppg;
+  }
+  function applyDeviceSelection() {
+    const sel = { ecg: !!(devEcg && devEcg.checked), ppg: !!(devPpg && devPpg.checked) };
+    HeartHub.setEnabled(sel);
+    try { localStorage.setItem(DEVICE_KEY, JSON.stringify(sel)); } catch (e) {}
+    if (ppgControls) ppgControls.style.display = sel.ppg ? '' : 'none';
+    updatePpgStatus();
+    updatePairWidgetVisibility();
+  }
+  function updatePpgStatus() {
+    if (!ppgStatus) return;
+    if (!PpgSource.isSupported()) { ppgStatus.textContent = 'Web Bluetooth 非対応（Chrome / Edge をご利用ください）'; return; }
+    const live = PpgSource.getLive();
+    if (ppgConnectBtn) ppgConnectBtn.textContent = live.connected ? '切断' : 'PPG 接続';
+    if (!live.connected) { ppgStatus.textContent = '未接続'; return; }
+    const bits = [live.online ? '受信中' : '受信なし'];
+    if (live.hr != null) bits.push('HR ' + live.hr);
+    if (live.spo2 != null) bits.push('SpO₂ ' + live.spo2 + '%');
+    if (!live.finger) bits.push('指なし');
+    ppgStatus.textContent = bits.join(' · ');
+  }
+  [devEcg, devPpg].forEach(el => el && el.addEventListener('change', applyDeviceSelection));
+  ppgConnectBtn?.addEventListener('click', async () => {
+    if (PpgSource.isConnected()) { PpgSource.disconnect(); setTimeout(updatePpgStatus, 200); return; }
+    if (!PpgSource.isSupported()) { alert('このブラウザは Web Bluetooth に対応していません。Chrome または Edge をご利用ください。'); return; }
+    ppgConnectBtn.disabled = true; if (ppgStatus) ppgStatus.textContent = 'デバイス選択中…';
+    try {
+      await PpgSource.connect();
+      if (!ppgWaveTimer) ppgWaveTimer = setInterval(() => { PpgSource.drawWave(); updatePpgStatus(); }, 250);
+    } catch (e) {
+      if (ppgStatus) ppgStatus.textContent = '接続失敗: ' + (e.message || e);
+    } finally { ppgConnectBtn.disabled = false; updatePpgStatus(); }
+  });
+  ppgTestBtn?.addEventListener('click', async () => {
+    if (!PpgSource.isConnected()) { if (ppgStatus) ppgStatus.textContent = '先に「PPG 接続」を押してください'; return; }
+    if (ppgStatus) ppgStatus.textContent = '信号テスト中…（約4秒）';
+    const r = await PpgSource.startTest(4000);
+    if (ppgStatus) ppgStatus.textContent = r.samples > 0
+      ? ('受信 OK ✓ ' + r.samples + ' サンプル' + (r.hr != null ? ' · HR ' + r.hr : '') + (r.finger ? '' : '（指先を光窓に当ててください）'))
+      : '受信なし。センサーの電源 ON・距離・装着をご確認ください。';
+  });
+  loadDeviceSelection();
+  applyDeviceSelection();
 
   updatePairWidgetVisibility();
   refreshEcgWidget();
@@ -509,45 +467,52 @@
       status.style.background = bg; status.style.color = fg; status.style.borderColor = bd;
     };
 
-    // 保存バックエンド（server.py）が無い静的配信では /api/* が存在せず、
-    // POST に対し HTML エラーページが返るため JSON parse で失敗する。
-    // その場合はサーバ保存を試みず、手動エクスポートへ誘導する。
-    if (!ecgServerUp) {
-      setS('ローカル保存サーバが無いため、自動保存はスキップされました。必要に応じて下の「手動エクスポート」から保存してください。', 'info');
-      return;
-    }
-
-    setS('全データを保存中…');
     const session = state.sessionName;
 
-    // 1) upload recording (if camera was used)
-    let videoName = null;
-    const blob = state.useCamera ? FaceRecorder.getBlob() : null;
-    if (blob && session) {
-      const ext = FaceRecorder.getMime().includes('mp4') ? 'mp4' : 'webm';
-      videoName = session + '.' + ext;
-      try { await fetch('/api/upload-video?name=' + encodeURIComponent(videoName), { method: 'POST', body: blob }); }
-      catch (e) { console.warn('video upload failed', e); videoName = null; }
-    }
-
-    // 2) camera meta (resolution/fps/device) from the recorder
+    // camera meta（両経路で使う）
     let camera = null, recorderStartIso = null;
     try { const sl = FaceRecorder.getSessionLog(); camera = sl.meta?.device?.camera || null; recorderStartIso = sl.meta?.sessionStart || null; } catch (e) {}
 
-    // 3) combined session.json + answers.csv + per-question HRV (server-side)
+    // 共通 payload（video はサーバ保存時に付与）
     const payload = {
       session,
       survey: { id: state.survey.id, name: state.survey.name },
       subject: state.subject,
       answers: state.answers.map((a, i) => ({ q: i + 1, title: state.survey.questions[i].title, domain: state.survey.questions[i].domain, score: a })),
       result: state.result,
-      events: ECG.events,
-      segments: ECG.buildSegments(),
-      rest_segments: ECG.buildRestSegments(),
-      video: videoName,
+      events: HeartHub.getEvents(),
+      segments: HeartHub.buildSegments(),
+      rest_segments: HeartHub.buildRestSegments(),
+      video: null,
       camera,
-      sync: { ecgStartWall: ECG.startWall, recorderStartIso }
+      sync: { hubStartWall: HeartHub.startWall, ecgStartWall: EcgSource.startWall, recorderStartIso }
     };
+    HeartHub.attachSavePayload(payload);   // sources フラグ +（PPG 有効時）ppg:{beats, raw}
+
+    // 保存バックエンド（server.py）が無い静的配信では /api/* が無く JSON parse に失敗する。
+    // PPG（ブラウザ完結）が有効ならクライアント側のファイル保存にフォールバックする。
+    if (!ecgServerUp) {
+      if (HeartHub.isEnabled('ppg')) {
+        downloadClientSession(payload);
+        setS('ローカル保存サーバが無いため、PPG セッションをファイルでダウンロードしました（録画は「手動エクスポート」から）。', 'info');
+      } else {
+        setS('ローカル保存サーバが無いため、自動保存はスキップされました。必要に応じて下の「手動エクスポート」から保存してください。', 'info');
+      }
+      return;
+    }
+
+    setS('全データを保存中…');
+
+    // 1) 録画アップロード（カメラ使用時）
+    const blob = state.useCamera ? FaceRecorder.getBlob() : null;
+    if (blob && session) {
+      const ext = FaceRecorder.getMime().includes('mp4') ? 'mp4' : 'webm';
+      const videoName = session + '.' + ext;
+      try { await fetch('/api/upload-video?name=' + encodeURIComponent(videoName), { method: 'POST', body: blob }); payload.video = videoName; }
+      catch (e) { console.warn('video upload failed', e); }
+    }
+
+    // 2) 統合 session.json + answers.csv +（ECG/PPG）設問別 HRV をサーバ側で算出
     try {
       const res = await fetch('/api/save-session', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
@@ -559,8 +524,19 @@
       }
       const r = await res.json();
       if (r.error) { setS('保存に失敗しました: ' + r.error, false); return; }
-      setS(`✓ 保存しました（${r.files?.length || 0} ファイル・ECG ${r.ecg_samples || 0} サンプル・設問別HRV ${r.per_question || 0}）\n保存先: ${r.dir}`, true);
+      setS(`✓ 保存しました（${r.files?.length || 0} ファイル・ECG ${r.ecg_samples || 0}・PPG ${r.ppg_beats || 0} 拍・設問別HRV ${r.per_question || 0}）\n保存先: ${r.dir}`, true);
     } catch (e) { setS('保存に失敗しました: ' + e, false); }
+  }
+
+  // PPG-only（サーバ無し）用：セッション JSON と PPG 生波形 CSV をブラウザから直接DL
+  function downloadClientSession(payload) {
+    try {
+      const out = { ...payload };
+      if (out.ppg && out.ppg.raw) out.ppg = { beats: out.ppg.beats, raw_samples: (out.ppg.raw.idx || []).length };
+      downloadBlob(new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' }), (payload.session || 'session') + '.session.json');
+      const raw = PpgSource.getRawCsv();
+      if (raw && raw.length > 12) downloadBlob(new Blob([raw], { type: 'text/csv' }), (payload.session || 'session') + '.ppg_raw.csv');
+    } catch (e) { console.warn('client session download failed', e); }
   }
 
   // ---------- Intro screen ----------
@@ -667,7 +643,7 @@
 
     switchScreen('rest');
     document.body.style.overflow = 'hidden';   // スクロール抑止 → 全画面で浮動 UI を完全に覆う
-    ECG.logEvent('rest_' + phase + '_start', -1);
+    HeartHub.logEvent('rest_' + phase + '_start', -1);
     if (state.useCamera) FaceRecorder.logEvent('rest_' + phase + '_start');
 
     let skipped = false;
@@ -688,7 +664,7 @@
 
     restSkip?.removeEventListener('click', onSkip);
     document.body.style.overflow = '';   // スクロール抑止を解除
-    ECG.logEvent('rest_' + phase + '_end', -1);
+    HeartHub.logEvent('rest_' + phase + '_end', -1);
     if (state.useCamera) FaceRecorder.logEvent('rest_' + phase + '_end', { skipped });
   }
 
@@ -774,7 +750,7 @@
     nextBtn.textContent = i === survey.questions.length - 1 ? '結果を見る' : '次へ';
 
     if (state.useCamera) FaceRecorder.setQuestionIndex(i);
-    ECG.logEvent('question_enter', i);
+    HeartHub.logEvent('question_enter', i);
   }
 
   function selectAnswer(idx) {
@@ -788,7 +764,7 @@
     });
     nextBtn.disabled = false;
     if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });
-    ECG.logEvent('answer_selected', state.current);
+    HeartHub.logEvent('answer_selected', state.current);
     persist();
 
     // 自殺念慮の設問でしきい値以上 → 危機介入モーダルを即時表示（量表 JSON の crisis 定義で駆動）
@@ -832,7 +808,7 @@
     if (state.useCamera) {
       FaceRecorder.logEvent('question_finalize', { a: state.answers[state.current] });
     }
-    ECG.logEvent('question_finalize', state.current);
+    HeartHub.logEvent('question_finalize', state.current);
     if (state.current < state.survey.questions.length - 1) {
       state.current++;
       renderQuestion();
@@ -867,7 +843,7 @@
       nextBtn.textContent = '記録停止中…';
       await FaceRecorder.stop();
     }
-    await ECG.stop();   // ECG 採集を停止（オーバーレイも閉じる）
+    await HeartHub.stop();   // 全心率源を停止（叠加層も閉じる）
 
     clearPersist();  // 完了したら進捗を破棄
     renderResult(result);
@@ -1154,8 +1130,7 @@
     state.useCamera = false;
     state.crisisShownForSession = false;
     state.sessionName = null;
-    ECG.events = []; ECG.startWall = null; ECG.active = false;
-    showOverlay(false);
+    HeartHub.reset();
     FaceRecorder.showPanel(false);
     clearSubjectForm();   // ← 前の被験者の入力をクリア（量表選択とカメラ設定は維持）
     [consentMedical, consentAge, consentData, consentCamera].forEach(el => { el.checked = false; });
