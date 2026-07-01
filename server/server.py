@@ -616,6 +616,8 @@ class AcquisitionManager:
             "qids_events": payload.get("events") or [],
             "segments": segments,
             "rest_segments": rest_segments,
+            "baseline_segment": payload.get("baseline_segment"),
+            "interaction": payload.get("interaction") or [],   # 設問ごとの反応時間/滞在時間/回答変更履歴
             "phases": build_phases(rows, segments, rest_segments),
             "per_question_hrv": per_question_hrv(rows, segments) if rows else [],
             "rest_hrv": per_question_hrv(rows, rest_segments) if rows else [],
@@ -897,6 +899,29 @@ class Handler(BaseHTTPRequestHandler):
         self.manager.log("info", f"已保存录像 {name}（{written // 1024} KB）")
         self._send_json({"saved": name, "size": written})
 
+    def _handle_upload_landmarks(self) -> None:
+        # 抽出済みの顔特徴 JSON（478点/52 blendshape/変換行列 + frames）を保存。
+        query = parse_qs(urlparse(self.path).query)
+        name = Path(query.get("name", [""])[0]).name
+        if not name or not name.endswith(".landmarks.json"):
+            self._send_json({"error": "invalid landmarks name"}, 400)
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        dest = self.manager.data_dir / name
+        self.manager.data_dir.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with dest.open("wb") as f:
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                f.write(chunk)
+                written += len(chunk)
+                remaining -= len(chunk)
+        self.manager.log("info", f"已保存特徴データ {name}（{written // 1024} KB）")
+        self._send_json({"saved": name, "size": written})
+
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length <= 0:
@@ -978,6 +1003,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(self.manager.open_data_dir())
             elif route == "/api/upload-video":
                 self._handle_upload()
+            elif route == "/api/upload-landmarks":
+                self._handle_upload_landmarks()
             elif route == "/api/shutdown":
                 self._send_json({"ok": True})
                 self.manager.log("info", "收到关闭请求，服务即将停止")

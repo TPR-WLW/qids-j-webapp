@@ -193,6 +193,15 @@
           <p class="tiny muted" style="margin:6px 0 0">心拍 / HRV を測定しない場合は、両方オフのままでも回答できます。</p>
         </div>
 
+        <h2>測定設定</h2>
+        <div class="subject-grid">
+          <label class="extract-field"><span>安静（前）の長さ（秒）</span>
+            <input type="number" id="restPreSec" class="select" min="0" max="900" step="5" value="180" inputmode="numeric"></label>
+          <label class="extract-field"><span>安静（後）の長さ（秒）</span>
+            <input type="number" id="restPostSec" class="select" min="0" max="900" step="5" value="180" inputmode="numeric"></label>
+        </div>
+        <p class="tiny muted" style="margin:4px 0 0">既定は 180 秒（3分）。短くしたいときは秒数を入力（例: 20）。<strong>0</strong> で当該フェーズを省略します。</p>
+
         <h2>被験者情報</h2>
         <div class="subject-grid">
           <label class="extract-field"><span>氏名 / ID（必須）</span>
@@ -273,8 +282,8 @@
         <h3>実験説明</h3>
         <div class="notice">
           <p><strong>センサーの装着</strong></p>
-          <ul>
-            <li><strong>① 心電（ECG）センサー（myBeat）</strong>：パッドタイプ電極を胸部に装着し、電源を ON にしてください。装着後は無線で心電を連続記録します。
+          <ul id="introSensorList">
+            <li id="introEcgGuide"><strong>① 心電（ECG）センサー（myBeat）</strong>：パッドタイプ電極を胸部に装着し、電源を ON にしてください。装着後は無線で心電を連続記録します。
               <div class="ecg-place">
                 <img class="ecg-place-img" src="assets/ecg-pad-placement.png"
                      alt="myBeat 電極パッドの装着位置：右側電極の中心を、身長170cm未満は鎖骨中心から80mm下・170cm以上は100mm下、身体中心線より左側（左胸部）に貼付"
@@ -286,16 +295,16 @@
                 </div>
               </div>
             </li>
-            <li><strong>① -別 PPG センサー（指先・任意）</strong>：myBeat の代わり/併用として使えます。前の画面で「PPG」を選び「接続」→ <strong>XIAO-HR</strong> を選択し、指先を光窓にやさしく当てて静止してください（Chrome / Edge）。</li>
+            <li id="introPpgGuide"><strong>① -別 PPG センサー（指先・任意）</strong>：myBeat の代わり/併用として使えます。前の画面で「PPG」を選び「接続」→ <strong>XIAO-HR</strong> を選択し、指先を光窓にやさしく当てて静止してください（Chrome / Edge）。</li>
             <li><strong>② カメラ（頭部の位置）</strong>：顔がカメラ映像の<strong>中央</strong>に来るように座り、画面を正面から見てください。顔全体が枠内に収まる距離を保ち、測定中は大きく動かないようにしてください。</li>
           </ul>
           <p><strong>実験の流れ</strong></p>
           <div class="exp-flow" role="list" aria-label="実験の流れ">
             <div class="exp-step" role="listitem"><span class="exp-ico">📝</span><span class="exp-label">被験者情報</span></div>
             <div class="exp-step" role="listitem"><span class="exp-ico">❤️</span><span class="exp-label">センサー装着・同意</span></div>
-            <div class="exp-step rest" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（前）<small>約3分</small></span></div>
+            <div class="exp-step rest" id="expStepRestPre" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（前）<small id="expRestPreDur">約3分</small></span></div>
             <div class="exp-step" role="listitem"><span class="exp-ico">❓</span><span class="exp-label">質問への回答</span></div>
-            <div class="exp-step rest" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（後）<small>約3分</small></span></div>
+            <div class="exp-step rest" id="expStepRestPost" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（後）<small id="expRestPostDur">約3分</small></span></div>
             <div class="exp-step" role="listitem"><span class="exp-ico">📊</span><span class="exp-label">結果・保存</span></div>
           </div>
           <p class="tiny muted" style="margin:6px 0 0">※ 安静時測定の間は、画面の中央を見つめ、リラックスして大きく動かないようにしてください。心電と映像はこの間も記録されています。</p>

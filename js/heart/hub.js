@@ -37,25 +37,84 @@ const HeartHub = (() => {
   function anyEnabled() { return enabled.ecg || enabled.ppg; }
 
   // ---- 共享事件时间线（Date.now()）----
-  function logEvent(type, q) { events.push({ q: (q == null ? currentRef() : q), type, ts: Date.now() }); }
+  // extra: 可选の付加フィールド（例: answer_selected は {a: 選択肢index}、crisis は {score,minScore}）
+  function logEvent(type, q, extra) {
+    const ev = { q: (q == null ? currentRef() : q), type, ts: Date.now() };
+    if (extra && typeof extra === 'object') Object.assign(ev, extra);
+    events.push(ev);
+  }
   function getEvents() { return events.slice(); }
 
-  // 设问区间：相邻 question_enter 之间为一题的窗口
+  // 设问区间：相邻 question_enter 之间为一题的窗口。
+  // 「前へ」で同じ設問に戻ると同じ q の窓が複数生成される（重複ではなく再訪＝実データ）。
+  // 各窓に visit（その q の何回目の訪問か）を付与し、下流で集計/識別できるようにする。
   function buildSegments() {
     const survey = surveyRef();
     const enters = events.filter(e => e.type === 'question_enter');
+    const visitCount = {};
     const segs = [];
     for (let i = 0; i < enters.length; i++) {
       const e = enters[i];
-      const end = (i + 1 < enters.length) ? enters[i + 1].ts : Date.now();
+      let end;
+      if (i + 1 < enters.length) {
+        end = enters[i + 1].ts;
+      } else {
+        // 最終設問：次の question_enter が無い。保存時刻まで延ばすと post-rest を巻き込み
+        // dwell/HRV が水増しになる → その設問の question_finalize、無ければ rest_post_start で終端。
+        const fin = events.find(ev => ev.type === 'question_finalize' && ev.q === e.q && ev.ts >= e.ts);
+        const restPost = events.find(ev => ev.type === 'rest_post_start' && ev.ts >= e.ts);
+        end = (fin && fin.ts) || (restPost && restPost.ts) || Date.now();
+      }
+      visitCount[e.q] = (visitCount[e.q] || 0) + 1;
       segs.push({
         q: e.q,
         questionNumber: (e.q ?? 0) + 1,
+        visit: visitCount[e.q],
         label: (survey && survey.questions[e.q] && survey.questions[e.q].title) || null,
         startTs: e.ts, endTs: end
       });
     }
     return segs;
+  }
+
+  // baseline（安静キャリブレーション）区間：baseline_start/end イベントから
+  function buildBaselineSegment() {
+    const s = events.find(e => e.type === 'baseline_start');
+    if (!s) return null;
+    const e = events.find(e => e.type === 'baseline_end');
+    return { q: 'baseline', questionNumber: null, label: 'ベースライン', startTs: s.ts, endTs: e ? e.ts : null };
+  }
+
+  // 設問ごとの回答インタラクション指標（イベント時間線から算出）:
+  //   reactionMs   最初の question_enter → 最初の answer_selected（反応時間）
+  //   dwellMs      その設問に滞在した合計時間（再訪の窓を合算 = buildSegments の該当窓の和）
+  //   changes      回答を変更した回数（answer_selected 回数 - 1）
+  //   answerHistory 各 answer_selected の {a:選択index, ts}
+  //   finalAnswer  最後に選ばれた選択肢 index
+  function buildInteraction() {
+    const survey = surveyRef();
+    const n = survey && survey.questions ? survey.questions.length : 0;
+    const segs = buildSegments();
+    const out = [];
+    for (let qi = 0; qi < n; qi++) {
+      const enters = events.filter(e => e.type === 'question_enter' && e.q === qi);
+      const picks = events.filter(e => e.type === 'answer_selected' && e.q === qi);
+      const firstEnter = enters.length ? enters[0].ts : null;
+      const firstPick = picks.length ? picks[0].ts : null;
+      const dwellMs = segs.filter(s => s.q === qi).reduce((sum, s) => sum + Math.max(0, s.endTs - s.startTs), 0);
+      const history = picks.map(p => ({ a: (p.a != null ? p.a : null), ts: p.ts }));
+      out.push({
+        q: qi,
+        questionNumber: qi + 1,
+        enterCount: enters.length,
+        reactionMs: (firstEnter != null && firstPick != null) ? (firstPick - firstEnter) : null,
+        dwellMs: enters.length ? dwellMs : null,
+        changes: Math.max(0, picks.length - 1),
+        answerHistory: history,
+        finalAnswer: history.length ? history[history.length - 1].a : null
+      });
+    }
+    return out;
   }
 
   // 安静时测定（前/后）区间：rest_*_start/end 事件
@@ -166,7 +225,7 @@ const HeartHub = (() => {
 
   return {
     init, setEnabled, getEnabled, isEnabled, anyEnabled,
-    logEvent, getEvents, buildSegments, buildRestSegments,
+    logEvent, getEvents, buildSegments, buildRestSegments, buildBaselineSegment, buildInteraction,
     begin, stop, reset, showOverlay, attachSavePayload,
     get startWall() { return startWall; }
   };

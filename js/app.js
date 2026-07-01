@@ -625,6 +625,8 @@
       events: HeartHub.getEvents(),
       segments: HeartHub.buildSegments(),
       rest_segments: HeartHub.buildRestSegments(),
+      baseline_segment: HeartHub.buildBaselineSegment(),
+      interaction: HeartHub.buildInteraction(),   // 設問ごとの反応時間/滞在時間/回答変更履歴
       video: null,
       camera,
       sync: { hubStartWall: HeartHub.startWall, ecgStartWall: EcgSource.startWall, recorderStartIso }
@@ -719,6 +721,39 @@
   loadCamSettings();
   loadSavedSubject();   // 記憶済みの被験者身分情報（ID・年齢層・性別）を初期表示に復元
 
+  // ---------- 安静時間の設定（前/後・秒。既定 180s=3分。0 で省略） ----------
+  const REST_SETTINGS_KEY = 'qids-j-rest-settings-v1';
+  const DEFAULT_REST_SEC = 180;
+  const restPreEl = $('restPreSec'), restPostEl = $('restPostSec');
+  function clampRestSec(v) {
+    v = Math.round(Number(v));
+    if (!isFinite(v) || v < 0) v = DEFAULT_REST_SEC;
+    return Math.min(900, Math.max(0, v));   // 0〜900 秒（15分）
+  }
+  function loadRestSettings() {
+    try {
+      const o = JSON.parse(localStorage.getItem(REST_SETTINGS_KEY) || '{}');
+      if (restPreEl  && o.preSec  != null) restPreEl.value  = clampRestSec(o.preSec);
+      if (restPostEl && o.postSec != null) restPostEl.value = clampRestSec(o.postSec);
+    } catch (e) {}
+  }
+  function saveRestSettings() {
+    if (restPreEl)  restPreEl.value  = clampRestSec(restPreEl.value);   // 入力を正規化
+    if (restPostEl) restPostEl.value = clampRestSec(restPostEl.value);
+    try {
+      localStorage.setItem(REST_SETTINGS_KEY, JSON.stringify({
+        preSec:  clampRestSec(restPreEl?.value ?? DEFAULT_REST_SEC),
+        postSec: clampRestSec(restPostEl?.value ?? DEFAULT_REST_SEC)
+      }));
+    } catch (e) {}
+  }
+  function getRestDurationMs(phase) {
+    const el = phase === 'pre' ? restPreEl : restPostEl;
+    return clampRestSec(el ? el.value : DEFAULT_REST_SEC) * 1000;
+  }
+  [restPreEl, restPostEl].forEach(el => el?.addEventListener('change', saveRestSettings));
+  loadRestSettings();
+
   startCamBtn.addEventListener('click', async () => {
     if (!FaceRecorder.isSupported()) {
       alert('お使いのブラウザはカメラ録画に対応していません。\n「カメラを使わずに開始」でお進みください。');
@@ -750,6 +785,7 @@
     let skipped = false;
     const onSkip = () => { skipped = true; };
     baselineSkip.addEventListener('click', onSkip, { once: true });
+    HeartHub.logEvent('baseline_start', -1);   // 統一時間線（墙钟）にも記録 → segments と同一基準
     FaceRecorder.logEvent('baseline_start');
     const start = performance.now();
     await new Promise((resolve) => {
@@ -771,18 +807,23 @@
       tick();
     });
     baselineSkip.removeEventListener('click', onSkip);
-    FaceRecorder.logEvent('baseline_end', { skipped, durationMs: +(performance.now() - start).toFixed(2) });
+    const baselineDurationMs = +(performance.now() - start).toFixed(2);
+    HeartHub.logEvent('baseline_end', -1, { skipped, durationMs: baselineDurationMs });
+    FaceRecorder.logEvent('baseline_end', { skipped, durationMs: baselineDurationMs });
   }
 
-  // ---------- 安静時測定（前/後・3分） ----------
-  const REST_DURATION_MS = 3 * 60 * 1000;
+  // ---------- 安静時測定（前/後・長さは「測定設定」で可変。既定 180s、0 で省略） ----------
   // 全画面の注視十字のみ表示（被験者の認知負荷を最小化）。
   // タイマー／スキップは操作者向けに隅へ控えめに表示。浮動 UI（カメラ/心拍/サーバ）は
   // 全画面の rest スクリーン自体が覆い隠す。
+  function fmtMMSS(ms) { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
   async function runRestMeasurement(phase) {   // phase: 'pre' | 'post'
+    const durationMs = getRestDurationMs(phase);
+    if (durationMs <= 0) return;   // 0 秒設定 → このフェーズを丸ごと省略（rest 画面もイベントも出さない）
+
     const phaseLabel = $('restPhaseLabel'), cd = $('restCountdown'), restSkip = $('restSkip');
     if (phaseLabel) phaseLabel.textContent = phase === 'pre' ? '安静（前）' : '安静（後）';
-    if (cd) cd.textContent = '3:00';
+    if (cd) cd.textContent = fmtMMSS(durationMs);
 
     switchScreen('rest');
     document.body.style.overflow = 'hidden';   // スクロール抑止 → 全画面で浮動 UI を完全に覆う
@@ -798,10 +839,9 @@
       const timer = setInterval(() => {
         if (skipped) { clearInterval(timer); resolve(); return; }
         const elapsed = performance.now() - start;
-        const remaining = Math.max(0, REST_DURATION_MS - elapsed);
-        const s = Math.ceil(remaining / 1000);
-        if (cd) cd.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-        if (elapsed >= REST_DURATION_MS) { clearInterval(timer); resolve(); }
+        const remaining = Math.max(0, durationMs - elapsed);
+        if (cd) cd.textContent = fmtMMSS(remaining);
+        if (elapsed >= durationMs) { clearInterval(timer); resolve(); }
       }, 200);
     });
 
@@ -825,6 +865,25 @@
     screens[key].classList.add('active');
     window.scrollTo({ top: 0, behavior: 'smooth' });
     if (typeof updatePairWidgetVisibility === 'function') updatePairWidgetVisibility();
+    if (key === 'intro') updateIntroSensorGuide();
+  }
+
+  // 説明画面のセンサー装着ガイドを、前画面で選んだ計測デバイスに合わせて出し分ける。
+  // 例: myBeat 未選択なら胸部電極の装着図・説明を出さない（PPG も同様）。
+  function updateIntroSensorGuide() {
+    const ecgLi = $('introEcgGuide'), ppgLi = $('introPpgGuide');
+    if (ecgLi) ecgLi.style.display = HeartHub.isEnabled('ecg') ? '' : 'none';
+    if (ppgLi) ppgLi.style.display = HeartHub.isEnabled('ppg') ? '' : 'none';
+
+    // 実験の流れの「安静時間」表示を設定値に合わせる（0 秒ならそのステップを隠す）
+    const fmtDur = sec => sec <= 0 ? 'なし' : (sec % 60 === 0 ? `約${sec / 60}分` : `約${sec}秒`);
+    const preSec = getRestDurationMs('pre') / 1000, postSec = getRestDurationMs('post') / 1000;
+    const preDur = $('expRestPreDur'), postDur = $('expRestPostDur');
+    const preStep = $('expStepRestPre'), postStep = $('expStepRestPost');
+    if (preDur) preDur.textContent = fmtDur(preSec);
+    if (postDur) postDur.textContent = fmtDur(postSec);
+    if (preStep) preStep.style.display = preSec <= 0 ? 'none' : '';
+    if (postStep) postStep.style.display = postSec <= 0 ? 'none' : '';
   }
 
   function goQuiz() {
@@ -907,12 +966,13 @@
     });
     nextBtn.disabled = false;
     if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });
-    HeartHub.logEvent('answer_selected', state.current);
+    HeartHub.logEvent('answer_selected', state.current, { a: idx });   // 選択値を時間線に記録（変更履歴・反応時間の算出用）
     persist();
 
     // 自殺念慮の設問でしきい値以上 → 危機介入モーダルを即時表示（量表 JSON の crisis 定義で駆動）
     const cq = state.survey.questions[state.current];
     if (cq.crisis && idx >= (cq.crisis.minScore != null ? cq.crisis.minScore : 1)) {
+      HeartHub.logEvent('crisis_triggered', state.current, { score: idx, minScore: (cq.crisis.minScore != null ? cq.crisis.minScore : 1) });
       showCrisisModal();
     }
   }
@@ -923,6 +983,7 @@
     state.crisisShownForSession = true;
     crisisModal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
+    HeartHub.logEvent('crisis_modal_shown', state.current);
     if (state.useCamera) FaceRecorder.logEvent('crisis_modal_shown');
     // フォーカスを Continue ボタンに移す（視覚的インパクトを和らげる）
     setTimeout(() => crisisContinue?.focus(), 100);
@@ -931,6 +992,7 @@
     if (!crisisModal) return;
     crisisModal.classList.add('hidden');
     document.body.style.overflow = '';
+    HeartHub.logEvent('crisis_modal_closed', state.current);
     if (state.useCamera) FaceRecorder.logEvent('crisis_modal_closed');
   }
   crisisContinue?.addEventListener('click', hideCrisisModal);
@@ -1180,6 +1242,7 @@
       // button the user clicks → window.open runs inside that gesture →
       // no popup blocker.
       const id = await saveHandoff(doc);
+      persistLandmarks(doc);   // IndexedDB(TTL) に頼らず抽出結果を永続化（サーバ保存＋自動DL）
       showExtractDone(id);
     } catch (e) {
       hideExtractModal();
@@ -1195,6 +1258,22 @@
       openAnalyzerBtn.disabled = !(state.useCamera && FaceRecorder.getBlob());
     }
   });
+
+  // 抽出した顔特徴（478点/52 blendshape/変換行列）を確実に残す。
+  // IndexedDB の handoff は TTL で消えるため、①サーバ稼働時は /api/upload-landmarks に保存、
+  // ②常にクライアント側へ自動ダウンロード（ジェスチャ無しでブロックされても ①と IndexedDB が保険）。
+  async function persistLandmarks(doc) {
+    const base = (state.sessionName || ('qids-j_' + timestamp())) + '.landmarks.json';
+    let json;
+    try { json = JSON.stringify(doc); } catch (e) { console.warn('landmarks stringify failed', e); return; }
+    if (ecgServerUp) {
+      try {
+        await fetch('/api/upload-landmarks?name=' + encodeURIComponent(base),
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json });
+      } catch (e) { console.warn('landmark upload failed', e); }
+    }
+    try { downloadBlob(new Blob([json], { type: 'application/json' }), base); } catch (e) {}
+  }
 
   function formatEta(sec) {
     if (sec < 60) return `${Math.round(sec)}秒`;
@@ -1226,7 +1305,7 @@
       const tx = db.transaction(HANDOFF_STORE, 'readwrite');
       const store = tx.objectStore(HANDOFF_STORE);
       store.put({ id, data, createdAt: Date.now() });
-      const cutoff = Date.now() - 60 * 60 * 1000;
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;   // 24h（旧値 1h だと抽出結果が早々に消えていた）
       store.openCursor().onsuccess = (e) => {
         const cur = e.target.result;
         if (cur) {
