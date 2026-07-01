@@ -723,7 +723,7 @@
 
   // ---------- 安静時間の設定（前/後・秒。既定 180s=3分。0 で省略） ----------
   const REST_SETTINGS_KEY = 'qids-j-rest-settings-v1';
-  const DEFAULT_REST_SEC = 180;
+  const DEFAULT_REST_SEC = 20;
   const restPreEl = $('restPreSec'), restPostEl = $('restPostSec');
   function clampRestSec(v) {
     v = Math.round(Number(v));

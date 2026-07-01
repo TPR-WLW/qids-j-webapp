@@ -196,11 +196,11 @@
         <h2>測定設定</h2>
         <div class="subject-grid">
           <label class="extract-field"><span>安静（前）の長さ（秒）</span>
-            <input type="number" id="restPreSec" class="select" min="0" max="900" step="5" value="180" inputmode="numeric"></label>
+            <input type="number" id="restPreSec" class="select" min="0" max="900" step="5" value="20" inputmode="numeric"></label>
           <label class="extract-field"><span>安静（後）の長さ（秒）</span>
-            <input type="number" id="restPostSec" class="select" min="0" max="900" step="5" value="180" inputmode="numeric"></label>
+            <input type="number" id="restPostSec" class="select" min="0" max="900" step="5" value="20" inputmode="numeric"></label>
         </div>
-        <p class="tiny muted" style="margin:4px 0 0">既定は 180 秒（3分）。短くしたいときは秒数を入力（例: 20）。<strong>0</strong> で当該フェーズを省略します。</p>
+        <p class="tiny muted" style="margin:4px 0 0">既定は 20 秒。変更したいときは秒数を入力（例: 180 で3分）。<strong>0</strong> で当該フェーズを省略します。</p>
 
         <h2>被験者情報</h2>
         <div class="subject-grid">
@@ -302,9 +302,9 @@
           <div class="exp-flow" role="list" aria-label="実験の流れ">
             <div class="exp-step" role="listitem"><span class="exp-ico">📝</span><span class="exp-label">被験者情報</span></div>
             <div class="exp-step" role="listitem"><span class="exp-ico">❤️</span><span class="exp-label">センサー装着・同意</span></div>
-            <div class="exp-step rest" id="expStepRestPre" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（前）<small id="expRestPreDur">約3分</small></span></div>
+            <div class="exp-step rest" id="expStepRestPre" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（前）<small id="expRestPreDur">約20秒</small></span></div>
             <div class="exp-step" role="listitem"><span class="exp-ico">❓</span><span class="exp-label">質問への回答</span></div>
-            <div class="exp-step rest" id="expStepRestPost" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（後）<small id="expRestPostDur">約3分</small></span></div>
+            <div class="exp-step rest" id="expStepRestPost" role="listitem"><span class="exp-ico">🧘</span><span class="exp-label">安静時測定（後）<small id="expRestPostDur">約20秒</small></span></div>
             <div class="exp-step" role="listitem"><span class="exp-ico">📊</span><span class="exp-label">結果・保存</span></div>
           </div>
           <p class="tiny muted" style="margin:6px 0 0">※ 安静時測定の間は、画面の中央を見つめ、リラックスして大きく動かないようにしてください。心電と映像はこの間も記録されています。</p>
