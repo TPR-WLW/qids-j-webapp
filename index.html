@@ -79,7 +79,23 @@
     .device-select .check { align-items: flex-start; }
     .ppg-controls { margin-top: 4px; padding: 10px 12px; border: 1px dashed #cdd6dd; border-radius: 8px; background: #fff; }
     .ppg-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .ppg-wave { width: 100%; max-width: 360px; height: 48px; margin-top: 8px; background: #0f1117; border-radius: 6px; display: block; }
+    .ppg-wave { width: 100%; max-width: 640px; height: 72px; margin-top: 8px; background: #0f1117; border-radius: 6px; display: block; }
+    /* 連接状态：彩色点 + 文字 */
+    .ppg-state { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #33424d; }
+    .ppg-dot { width: 10px; height: 10px; border-radius: 50%; background: #9aa5ad; flex: 0 0 auto; transition: background .2s; }
+    .ppg-dot.off  { background: #9aa5ad; }
+    .ppg-dot.ok   { background: #3ddc84; box-shadow: 0 0 0 3px rgba(61,220,132,.22); }
+    .ppg-dot.wait { background: #f5b301; box-shadow: 0 0 0 3px rgba(245,179,1,.22); animation: ppgpulse 1s ease-in-out infinite; }
+    .ppg-dot.err  { background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.22); }
+    @keyframes ppgpulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    /* 実時メトリクス（HR / SpO₂ / 受信 / 指） */
+    .ppg-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; max-width: 640px; }
+    .ppg-tile { background: #f5f8fa; border: 1px solid #e2e9ee; border-radius: 8px; padding: 6px 4px; text-align: center; }
+    .ppg-tile-v { display: block; font-size: 19px; font-weight: 700; color: #1f3a4d; line-height: 1.15; font-variant-numeric: tabular-nums; }
+    .ppg-tile-l { display: block; font-size: 10px; color: #6b7a85; margin-top: 2px; }
+    /* 受信なし/占有 警告 */
+    .ppg-warn { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5; background: #fdeceb; color: #b42318; border: 1px solid #f5c9c5; max-width: 640px; }
+    .ppg-warn.info { background: #e8f5ee; color: #1f7a4d; border-color: #bfe6d0; }
     /* 実時間叠加層：複数源 */
     .ecg-ov-src + .ecg-ov-src { margin-top: 6px; }
     .ecg-ov-sep { height: 1px; background: rgba(255,255,255,.15); margin: 6px 0; }
@@ -162,9 +178,16 @@
             <div class="ppg-row">
               <button type="button" id="ppgConnectBtn" class="btn btn-outline btn-sm">PPG 接続</button>
               <button type="button" id="ppgTestBtn" class="btn btn-ghost btn-sm">信号テスト</button>
-              <span id="ppgStatus" class="tiny muted">未接続</span>
+              <span class="ppg-state"><span id="ppgDot" class="ppg-dot off"></span><span id="ppgStatus" class="ppg-status-text">未接続</span></span>
             </div>
-            <canvas id="ppgWave" width="320" height="48" class="ppg-wave" aria-label="PPG 脈波プレビュー"></canvas>
+            <div id="ppgMetrics" class="ppg-metrics" style="display:none">
+              <div class="ppg-tile"><span class="ppg-tile-v" id="ppgHr">–</span><span class="ppg-tile-l">HR (bpm)</span></div>
+              <div class="ppg-tile"><span class="ppg-tile-v" id="ppgSpo2">–</span><span class="ppg-tile-l">SpO₂ (%)</span></div>
+              <div class="ppg-tile"><span class="ppg-tile-v" id="ppgSps">–</span><span class="ppg-tile-l">受信 (/秒)</span></div>
+              <div class="ppg-tile"><span class="ppg-tile-v" id="ppgFinger">–</span><span class="ppg-tile-l">指</span></div>
+            </div>
+            <canvas id="ppgWave" width="640" height="72" class="ppg-wave" aria-label="PPG 脈波プレビュー"></canvas>
+            <div id="ppgWarn" class="ppg-warn" style="display:none"></div>
             <p class="tiny muted" style="margin:4px 0 0">※「接続」→ <strong>XIAO-HR</strong> を選択 → 指先を光窓にやさしく当てて静止。両方選ぶと myBeat と PPG を同時記録します。</p>
           </div>
           <p class="tiny muted" style="margin:6px 0 0">心拍 / HRV を測定しない場合は、両方オフのままでも回答できます。</p>
@@ -205,6 +228,15 @@
         </div>
         <label class="subject-note" style="margin-top:14px"><span>自由記述（特記事項・実験条件など・任意）</span>
           <textarea id="subjNote" rows="3" placeholder="任意"></textarea></label>
+
+        <!-- 被験者情報の記憶（身分情報のみ：ID・年齢層・性別。当日の状態は毎回入力） -->
+        <div class="subject-remember" style="margin-top:14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap">
+          <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer">
+            <input type="checkbox" id="subjRemember">
+            <span>この情報を記憶する（次回自動入力：<strong>ID・年齢層・性別</strong>のみ）</span>
+          </label>
+          <button type="button" id="subjClearSaved" class="btn btn-ghost btn-sm" style="display:none">記憶を消去</button>
+        </div>
 
         <div class="notice" id="ecgNotice" style="margin-top:16px; display:none">
           ECG デバイス: <strong id="ecgDevStatus">確認中…</strong>

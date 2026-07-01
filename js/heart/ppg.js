@@ -14,7 +14,9 @@
  *   init({onLog})           注入日志回调（可选）
  *   isSupported()           浏览器是否支持 Web Bluetooth
  *   isConnected()           当前是否已连接 GATT
- *   connect() / disconnect()  连接/断开（用户手势触发）
+ *   probeGranted()          启动时探测是否有已授权设备（缓存，供 UI 显示“再接続”）
+ *   hasGranted()            是否已有已授权设备（同步，读缓存）
+ *   connect() / disconnect()  连接/断开（用户手势触发；已授权则免弹框直连）
  *   startTest(ms)           短时信号测试，回调返回 {samples, hr}
  *   begin(startWall)        进入“记录中”（清空会话缓冲，开始累积心拍/原始波形）
  *   stop()                  退出“记录中”（保持连接以便结果页仍可显示）
@@ -38,10 +40,12 @@ const PpgSource = (() => {
   const P = { dcAlpha: 0.005, lpAlpha: 0.4, envDecay: 0.995, thrFrac: 0.55, ampFloor: 200, refractoryMs: 300 };
 
   let onLog = () => {};
+  let onData = () => {};          // パケット到着ごとに呼ぶ（UI 側で rAF 描画をトリガ）
 
   // ---- 连接状态 ----
   let device = null, characteristic = null;
   let wantConnected = false, reconnecting = false;
+  let knownDevice = null;         // getDevices() で見つかった既授権デバイス（1タップ再接続用）
   let lastTs = 0;                 // 最近一次收到包的 Date.now()
   let spsCount = 0;               // 每秒样本计数
 
@@ -78,15 +82,53 @@ const PpgSource = (() => {
     characteristic.addEventListener('characteristicvaluechanged', onPacket);
   }
 
+  // 以前このオリジンに許可された XIAO デバイスを（選択ダイアログ無しで）探す。
+  // 対応していない／未許可なら null。permission は永続化されるため次回以降も返る。
+  async function _findGranted() {
+    if (!navigator.bluetooth.getDevices) return null;   // 旧 Chrome / new-permissions-backend 無効時
+    try {
+      const devs = await navigator.bluetooth.getDevices();
+      return devs.find(d => (d.name || '').startsWith(NAME_PREFIX)) || null;
+    } catch (e) { return null; }
+  }
+
+  // 起動時に一度呼ぶ：既授権デバイスの有無をキャッシュ（UI が「再接続」表示に使う）。
+  async function probeGranted() { knownDevice = await _findGranted(); return !!knownDevice; }
+  function hasGranted() { return !!knownDevice; }
+
+  function _bindDevice(dev) {
+    device = dev;
+    device.removeEventListener('gattserverdisconnected', _onDisconnect);
+    device.addEventListener('gattserverdisconnected', _onDisconnect);
+  }
+
   async function connect() {
     if (!isSupported()) throw new Error('このブラウザは Web Bluetooth 非対応です（Chrome / Edge をご利用ください）。');
-    device = await navigator.bluetooth.requestDevice({
+    // ① 既授権デバイスがあれば選択ダイアログ無しで再接続（1タップ）
+    const granted = knownDevice || await _findGranted();
+    if (granted) {
+      try {
+        _bindDevice(granted);
+        wantConnected = true;
+        await _gattConnect();
+        knownDevice = device;
+        onLog('info', 'PPG 再接続（既知デバイス）: ' + (device.name || NAME_PREFIX));
+        resetDetect();
+        return true;
+      } catch (e) {
+        // 既知デバイスが圏外／電源オフ等 → 選択ダイアログにフォールバック
+        onLog('warn', '既知デバイスへの接続に失敗、選択に切替: ' + (e.message || e));
+        wantConnected = false; device = null;
+      }
+    }
+    // ② 初回 or フォールバック：選択ダイアログで許可を得る
+    _bindDevice(await navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: NAME_PREFIX }],
       optionalServices: [SVC]
-    });
-    device.addEventListener('gattserverdisconnected', _onDisconnect);
+    }));
     wantConnected = true;
     await _gattConnect();
+    knownDevice = device;
     onLog('info', 'PPG 接続済み: ' + (device.name || NAME_PREFIX));
     resetDetect();
     return true;
@@ -122,7 +164,13 @@ const PpgSource = (() => {
     lastTs = Date.now();
     if (dv.byteLength < 5) return;
     const first = dv.getUint32(0, true), n = dv.getUint8(4);
-    if (nextIdx !== null && first !== nextIdx) resetContinuity();   // 丢包/重启 → 重置连续性
+    // 连续性判定を 2 段階に：小さな前向きギャップ（<=3s 丢包）は dcEMA/包络を温存し RR 計時だけ断つ
+    // （full reset だと dcEMA が ~2s 再収敛して波形・HR が固まる）。大ギャップ/再起動時のみ整器复位。
+    if (nextIdx !== null && first !== nextIdx) {
+      const gap = first - nextIdx;
+      if (gap > 0 && gap <= 300) breakRRContinuity();   // 前向き小丢包：跨ギャップの RR のみ無効化
+      else resetContinuity();                            // 大ギャップ or index 再起動：整器复位
+    }
     for (let i = 0; i < n; i++) {
       const off = 5 + i * 8;
       if (off + 8 > dv.byteLength) break;
@@ -132,6 +180,7 @@ const PpgSource = (() => {
       if (recording) { rawIdx.push(first + i); rawIr.push(ir); rawRed.push(red); }
     }
     nextIdx = first + n;
+    onData();   // 到着ごとに UI へ通知 → rAF 描画で 250ms タイマ待ちのレイテンシを除去
   }
 
   function processSample(idx, ir, red) {
@@ -190,6 +239,7 @@ const PpgSource = (() => {
 
   function pushWave(idx, v, beat, finger) { wave.push({ idx, v, beat, finger }); if (wave.length > 500) wave.shift(); }
 
+  function breakRRContinuity() { lastPeakIdx = null; }   // RR 計時だけ断つ（自适应滤波器 dcEMA/包络は温存）
   function resetContinuity() { dcEMA = null; acLP = acP2 = acP1 = 0; envPos = envNeg = 0; lastPeakIdx = null; }
   function resetDetect() { nextIdx = null; resetContinuity(); rrSeries = []; wave = []; spIR = []; spRED = []; curSpo2 = null; }
 
@@ -243,10 +293,30 @@ const PpgSource = (() => {
 
   function online() { return !!lastTs && (Date.now() - lastTs < 2000); }
 
+  // 受信レート（samples/sec）概算：UI の“受信できているか”表示用。
+  // 呼ぶたびに累積 spsCount の差分から算出（正常時 ≈100）。
+  let _spsMark = -1, _spsMarkTs = 0, _spsLast = 0;
+  function getSps() {
+    const now = Date.now();
+    if (_spsMark < 0 || !online()) { _spsMark = spsCount; _spsMarkTs = now; if (!online()) _spsLast = 0; return _spsLast; }
+    const dt = (now - _spsMarkTs) / 1000;
+    if (dt >= 1.0) {                                   // 1s 窗口：抹平 160ms 突发的量化抖动（±<=1 包）
+      const inst = Math.max(0, (spsCount - _spsMark) / dt);
+      _spsLast = _spsLast > 0 ? _spsLast + 0.5 * (inst - _spsLast) : inst;   // + EMA 平滑
+      _spsMark = spsCount; _spsMarkTs = now;
+    }
+    return Math.round(_spsLast);
+  }
+
   function getLive() {
     curSpo2 = computeSpo2();
     const arr = rrSeries.slice(-WIN).map(x => x.rr);
     const h = arr.length >= 2 ? computeHRV(arr) : null;
+    // ライブ表示用の瞬時 HR：直近 4 拍の中央値ベース（60 拍平均の h.hr より即応）
+    const recent = rrSeries.slice(-4).map(x => x.rr);
+    const hrInst = recent.length >= 2
+      ? Math.round(60000 / (recent.slice().sort((a, b) => a - b)[Math.floor(recent.length / 2)]))
+      : null;
     const conn = isConnected();
     const on = online();
     return {
@@ -256,6 +326,7 @@ const PpgSource = (() => {
       ir: lastIRv,
       spo2: (lastFinger && curSpo2 != null) ? curSpo2 : null,
       hr: (lastFinger && h) ? Math.round(h.hr) : null,
+      hrInst: (lastFinger && hrInst != null) ? hrInst : null,
       rmssd: (arr.length >= 5 && h) ? h.rmssd : null,
       sdnn: (arr.length >= 5 && h) ? h.sdnn : null,
       pnn50: (arr.length >= 5 && h) ? h.pnn50 : null,
@@ -288,7 +359,14 @@ const PpgSource = (() => {
     const cv = waveCanvas; if (!cv) return;
     const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, pad = 6;
     ctx.clearRect(0, 0, W, H);
-    if (wave.length < 2) return;
+    if (wave.length < 2) {
+      // データ未着：真っ黒だと「壊れている」ように見えるので、薄い基線＋待機表示を描く
+      ctx.strokeStyle = 'rgba(120,140,160,.5)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(pad, H / 2); ctx.lineTo(W - pad, H / 2); ctx.stroke();
+      ctx.fillStyle = 'rgba(150,170,190,.75)'; ctx.font = '11px system-ui, sans-serif'; ctx.textBaseline = 'middle';
+      ctx.fillText('受信待ち…', pad + 4, H / 2 - 8);
+      return;
+    }
     const vs = wave.map(p => p.v); const lo = Math.min(...vs), hi = Math.max(...vs), rng = Math.max(200, hi - lo);
     ctx.strokeStyle = '#46c2ff'; ctx.lineWidth = 1.5; ctx.beginPath();
     wave.forEach((p, i) => {
@@ -310,6 +388,7 @@ const PpgSource = (() => {
 
   return {
     init, isSupported, isConnected, connect, disconnect, startTest,
+    probeGranted, hasGranted, getSps,
     begin, stop, reset, getLive, getBeats, getRaw, getRawCsv,
     attachCanvas, drawWave
   };

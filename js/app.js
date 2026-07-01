@@ -121,7 +121,7 @@
   //   ・HeartHub:  有効な源へ start/stop/保存を分配・共有イベント時間線・叠加層
   // ============================================================
   EcgSource.init({ onLog: (lv, m) => console.info('[ECG]', m) });
-  PpgSource.init({ onLog: (lv, m) => console.info('[PPG]', m) });
+  PpgSource.init({ onLog: (lv, m) => console.info('[PPG]', m), onData: () => schedulePpgDraw() });
   HeartHub.init({
     overlay:  $('ecgOverlay'),
     survey:  () => state.survey,
@@ -248,6 +248,43 @@
     if (hint) hint.style.display = /[^\x00-\x7F]/.test(e.target.value) ? '' : 'none';
   });
 
+  // ---------- 被験者情報の記憶（身分情報のみ：ID・年齢層・性別。当日の状態は毎回入力） ----------
+  const SUBJECT_KEY = 'qids-j-subject-v1';
+  const subjRememberEl   = $('subjRemember');
+  const subjClearSavedEl = $('subjClearSaved');
+  function readSavedSubject() {
+    try { return JSON.parse(localStorage.getItem(SUBJECT_KEY) || 'null'); } catch (e) { return null; }
+  }
+  // 保存済みの身分情報をフォームへ復元（あれば記憶チェック ON・消去ボタン表示）
+  function loadSavedSubject() {
+    const saved = readSavedSubject();
+    if (saved) {
+      if (saved.id      != null) $('subjId').value  = saved.id;
+      if (saved.ageBand != null) $('subjAge').value = saved.ageBand;
+      if (saved.sex     != null) $('subjSex').value = saved.sex;
+      if (subjRememberEl) subjRememberEl.checked = true;
+    }
+    if (subjClearSavedEl) subjClearSavedEl.style.display = saved ? '' : 'none';
+    $('subjId')?.dispatchEvent(new Event('input'));   // ローマ字ヒントを再評価
+  }
+  // 記憶チェックが ON なら身分情報のみ保存、OFF なら削除
+  function persistSubjectPref(subj) {
+    const on = !!(subjRememberEl && subjRememberEl.checked);
+    try {
+      if (on) localStorage.setItem(SUBJECT_KEY, JSON.stringify({ id: subj.id, ageBand: subj.ageBand, sex: subj.sex }));
+      else    localStorage.removeItem(SUBJECT_KEY);
+    } catch (e) {}
+    if (subjClearSavedEl) subjClearSavedEl.style.display = on ? '' : 'none';
+  }
+  subjClearSavedEl?.addEventListener('click', () => {
+    try { localStorage.removeItem(SUBJECT_KEY); } catch (e) {}
+    if (subjRememberEl) subjRememberEl.checked = false;
+    ['subjId', 'subjAge', 'subjSex'].forEach(id => { const el = $(id); if (el) el.value = ''; });
+    subjClearSavedEl.style.display = 'none';
+    $('subjId')?.dispatchEvent(new Event('input'));
+    $('subjId')?.focus();
+  });
+
   $('subjectNext')?.addEventListener('click', async () => {
     const subj = collectSubject();
     if (!subj.id) { alert('氏名 / ID を入力してください（必須）。'); $('subjId').focus(); return; }
@@ -256,6 +293,7 @@
       if (!state.survey) { alert('量表を読み込めませんでした。ローカルサーバ経由で開いているかご確認ください。'); return; }
     }
     state.subject = subj;
+    persistSubjectPref(subj);   // 記憶 ON なら身分情報のみ localStorage に保存
     switchScreen('intro');
   });
 
@@ -394,7 +432,17 @@
   const ppgTestBtn    = $('ppgTestBtn');
   const ppgStatus     = $('ppgStatus');
   const ppgWave       = $('ppgWave');
+  const ppgDot        = $('ppgDot');
+  const ppgMetrics    = $('ppgMetrics');
+  const ppgHr         = $('ppgHr');
+  const ppgSpo2       = $('ppgSpo2');
+  const ppgSps        = $('ppgSps');
+  const ppgFinger     = $('ppgFinger');
+  const ppgWarn       = $('ppgWarn');
   let ppgWaveTimer = null;
+  let ppgConnectedAt = 0, ppgEverOnline = false, ppgLastOnlineAt = 0;   // 占有/受信途絶 検出用
+  let ppgAutoRecovered = false, ppgRecovering = false;   // ゾンビ接続の自動リカバリ（1回だけ）
+  let ppgFlashMsg = '', ppgFlashUntil = 0;         // 信号テスト結果を数秒間だけ状態行に表示
   if (ppgWave) PpgSource.attachCanvas(ppgWave);
 
   function loadDeviceSelection() {
@@ -409,39 +457,133 @@
     try { localStorage.setItem(DEVICE_KEY, JSON.stringify(sel)); } catch (e) {}
     if (ppgControls) ppgControls.style.display = sel.ppg ? '' : 'none';
     updatePpgStatus();
+    // 既授権デバイスの有無を探ってボタン表示を「再接続」に切替（選択ダイアログ無しで繋げる）
+    if (sel.ppg && PpgSource.isSupported()) PpgSource.probeGranted().then(updatePpgStatus).catch(() => {});
     updatePairWidgetVisibility();
+  }
+  function setPpgDot(kind) { if (ppgDot) ppgDot.className = 'ppg-dot ' + kind; }
+  function setPpgStatusText(t) {
+    // 信号テスト結果があれば数秒間はそれを優先表示（ドット色は実状態のまま）
+    if (Date.now() < ppgFlashUntil) { ppgStatus.textContent = ppgFlashMsg; return; }
+    ppgStatus.textContent = t;
   }
   function updatePpgStatus() {
     if (!ppgStatus) return;
-    if (!PpgSource.isSupported()) { ppgStatus.textContent = 'Web Bluetooth 非対応（Chrome / Edge をご利用ください）'; return; }
+    const knownLabel = PpgSource.hasGranted() ? 'PPG 再接続' : 'PPG 接続';
+
+    if (!PpgSource.isSupported()) {
+      setPpgDot('off'); setPpgStatusText('Web Bluetooth 非対応（Chrome / Edge を）');
+      if (ppgMetrics) ppgMetrics.style.display = 'none';
+      if (ppgWarn) ppgWarn.style.display = 'none';
+      return;
+    }
     const live = PpgSource.getLive();
-    if (ppgConnectBtn) ppgConnectBtn.textContent = live.connected ? '切断' : 'PPG 接続';
-    if (!live.connected) { ppgStatus.textContent = '未接続'; return; }
-    const bits = [live.online ? '受信中' : '受信なし'];
-    if (live.hr != null) bits.push('HR ' + live.hr);
-    if (live.spo2 != null) bits.push('SpO₂ ' + live.spo2 + '%');
-    if (!live.finger) bits.push('指なし');
-    ppgStatus.textContent = bits.join(' · ');
+    if (ppgConnectBtn) ppgConnectBtn.textContent = live.connected ? '切断' : knownLabel;
+
+    if (!live.connected) {
+      setPpgDot('off');
+      setPpgStatusText(PpgSource.hasGranted() ? '未接続（1タップで再接続できます）' : '未接続');
+      if (ppgMetrics) ppgMetrics.style.display = 'none';
+      if (ppgWarn) ppgWarn.style.display = 'none';
+      return;
+    }
+
+    // 接続済み：メトリクス表示 + 状態判定
+    if (ppgMetrics) ppgMetrics.style.display = '';
+    if (live.online) ppgEverOnline = true;
+    const sps = PpgSource.getSps ? PpgSource.getSps() : null;
+    const hrShow = live.hrInst != null ? live.hrInst : live.hr;   // ライブは瞬時 HR 優先
+    if (ppgHr)     ppgHr.textContent     = hrShow != null ? hrShow : '–';
+    if (ppgSpo2)   ppgSpo2.textContent   = live.spo2 != null ? live.spo2 : '–';
+    if (ppgSps)    ppgSps.textContent    = live.online && sps != null ? (Math.round(sps / 5) * 5) : '0';   // 5 刻みで表示 → ちらつき解消
+    if (ppgFinger) ppgFinger.textContent = live.online ? (live.finger ? '✓' : '✗') : '–';
+
+    const now = Date.now();
+    const sinceConnect = ppgConnectedAt ? (now - ppgConnectedAt) : 0;
+    if (live.online) {
+      setPpgDot('ok');
+      setPpgStatusText(live.finger ? '受信中' : '受信中（指先を光窓に当ててください）');
+      if (ppgWarn) ppgWarn.style.display = 'none';
+      ppgLastOnlineAt = now;
+      ppgAutoRecovered = false;   // 復帰したので次のゾンビにも自動リカバリ可
+    } else if (ppgRecovering) {
+      setPpgDot('wait'); setPpgStatusText('受信途絶 → 自動再接続中…');
+      if (ppgWarn) ppgWarn.style.display = 'none';
+    } else {
+      // 未 online。受信が途絶えている時間を測る：一度でも受信していれば最後の受信時刻から、
+      // 未受信なら接続時刻から。「一度受信 → その後途絶」（=データ流通後の半開）も拾えるようにする。
+      const stallMs = ppgEverOnline ? (now - ppgLastOnlineAt) : sinceConnect;
+      if (stallMs > 3000) {
+        // 3秒以上データなし＝半開/ゾンビ/占有。まず自動で1回だけ切断→再接続（既授権のみ・ダイアログ無し）。
+        if (!ppgAutoRecovered && PpgSource.hasGranted()) {
+          setPpgDot('wait'); setPpgStatusText('受信途絶 → 自動再接続中…');
+          if (ppgWarn) ppgWarn.style.display = 'none';
+          ppgAutoRecover();
+        } else {
+          setPpgDot('err');
+          setPpgStatusText('受信なし（復帰せず）');
+          if (ppgWarn) {
+            ppgWarn.className = 'ppg-warn';
+            ppgWarn.style.display = '';
+            ppgWarn.innerHTML = '⚠️ <strong>3秒以上データが届いていません</strong>（自動再接続でも復帰せず）。'
+              + 'ESP32 は接続断（conn=0）と認識しているのに Chrome 側が接続を掴んだままの<strong>半開／ゾンビ接続</strong>の可能性が高いです。<br>'
+              + '対処：① <strong>ESP32 を電源入れ直し</strong>（最も確実）　② OS の Bluetooth 設定でこの機器を「切断／削除」（<strong>ペアリングしない</strong>）　③「切断」→ もう一度「接続」。';
+          }
+        }
+      } else {
+        setPpgDot('wait');
+        setPpgStatusText(ppgEverOnline ? '受信が一時中断…' : '受信待ち…');
+        if (ppgWarn) ppgWarn.style.display = 'none';
+      }
+    }
+  }
+  // 波形描画はパケット到着（onData）から rAF で駆動 → 250ms タイマ待ちのレイテンシを排除。
+  // 複数パケットが 1 フレーム内に来ても 1 回に合流（coalesce）。
+  let ppgDrawPending = false;
+  function schedulePpgDraw() {
+    if (ppgDrawPending) return;
+    ppgDrawPending = true;
+    requestAnimationFrame(() => { ppgDrawPending = false; try { PpgSource.drawWave(); } catch (e) {} });
+  }
+  // ゾンビ/半開接続の自動リカバリ：切断 → 少し待って再接続（既授権デバイスなのでダイアログ無し）。
+  async function ppgAutoRecover() {
+    ppgRecovering = true; ppgAutoRecovered = true;
+    try {
+      PpgSource.disconnect();
+      await new Promise(r => setTimeout(r, 900));   // BlueZ が ACL を落とす猶予
+      await PpgSource.connect();
+      ppgConnectedAt = Date.now(); ppgEverOnline = false;   // 占有検出タイマーを再スタート
+    } catch (e) {
+      console.info('[PPG] auto-recover failed:', e && (e.message || e));
+    } finally { ppgRecovering = false; }
   }
   [devEcg, devPpg].forEach(el => el && el.addEventListener('change', applyDeviceSelection));
   ppgConnectBtn?.addEventListener('click', async () => {
-    if (PpgSource.isConnected()) { PpgSource.disconnect(); setTimeout(updatePpgStatus, 200); return; }
+    if (PpgSource.isConnected()) {
+      PpgSource.disconnect();
+      ppgConnectedAt = 0; ppgEverOnline = false; ppgFlashUntil = 0; ppgAutoRecovered = false;
+      setTimeout(updatePpgStatus, 200); return;
+    }
     if (!PpgSource.isSupported()) { alert('このブラウザは Web Bluetooth に対応していません。Chrome または Edge をご利用ください。'); return; }
-    ppgConnectBtn.disabled = true; if (ppgStatus) ppgStatus.textContent = 'デバイス選択中…';
+    ppgConnectBtn.disabled = true; setPpgDot('wait'); ppgStatus.textContent = PpgSource.hasGranted() ? '再接続中…' : 'デバイス選択中…';
     try {
       await PpgSource.connect();
-      if (!ppgWaveTimer) ppgWaveTimer = setInterval(() => { PpgSource.drawWave(); updatePpgStatus(); }, 250);
+      ppgConnectedAt = Date.now(); ppgEverOnline = false; ppgAutoRecovered = false;   // 占有検出タイマーの起点
+      // 状態更新＋兜底の波形描画を 250ms 周期で（データ到着時は onData→rAF が低遅延で先に描く）。
+      // 兜底があるので、データが来ない間も「受信待ち…」基線が表示され、真っ黒で固まらない。
+      if (!ppgWaveTimer) ppgWaveTimer = setInterval(() => { updatePpgStatus(); PpgSource.drawWave(); }, 250);
     } catch (e) {
-      if (ppgStatus) ppgStatus.textContent = '接続失敗: ' + (e.message || e);
+      setPpgDot('err'); ppgStatus.textContent = '接続失敗: ' + (e.message || e);
     } finally { ppgConnectBtn.disabled = false; updatePpgStatus(); }
   });
   ppgTestBtn?.addEventListener('click', async () => {
-    if (!PpgSource.isConnected()) { if (ppgStatus) ppgStatus.textContent = '先に「PPG 接続」を押してください'; return; }
-    if (ppgStatus) ppgStatus.textContent = '信号テスト中…（約4秒）';
+    if (!PpgSource.isConnected()) { ppgFlashMsg = '先に「PPG 接続」を押してください'; ppgFlashUntil = Date.now() + 4000; updatePpgStatus(); return; }
+    ppgFlashMsg = '信号テスト中…（約4秒）'; ppgFlashUntil = Date.now() + 5000; updatePpgStatus();
     const r = await PpgSource.startTest(4000);
-    if (ppgStatus) ppgStatus.textContent = r.samples > 0
-      ? ('受信 OK ✓ ' + r.samples + ' サンプル' + (r.hr != null ? ' · HR ' + r.hr : '') + (r.finger ? '' : '（指先を光窓に当ててください）'))
-      : '受信なし。センサーの電源 ON・距離・装着をご確認ください。';
+    ppgFlashMsg = r.samples > 0
+      ? ('受信 OK ✓ ' + r.samples + ' サンプル' + (r.hr != null ? ' · HR ' + r.hr : '') + (r.finger ? '' : '（指先を当ててください）'))
+      : '受信なし。占有・電源・装着をご確認ください';
+    ppgFlashUntil = Date.now() + 4000; updatePpgStatus();
   });
   loadDeviceSelection();
   applyDeviceSelection();
@@ -575,6 +717,7 @@
   }
   [camResSel, camFpsSel].forEach(el => el?.addEventListener('change', saveCamSettings));
   loadCamSettings();
+  loadSavedSubject();   // 記憶済みの被験者身分情報（ID・年齢層・性別）を初期表示に復元
 
   startCamBtn.addEventListener('click', async () => {
     if (!FaceRecorder.isSupported()) {
@@ -1120,6 +1263,8 @@
     state.subject = null;
     ['subjId', 'subjAge', 'subjSex', 'subjSleep', 'subjCaffeine', 'subjExercise', 'subjMed', 'subjNote']
       .forEach(id => { const el = $(id); if (el) el.value = ''; });
+    // 記憶がある場合は身分情報（ID・年齢層・性別）のみ復元（当日の状態はクリアのまま）
+    loadSavedSubject();
   }
 
   function resetToStart() {
@@ -1184,4 +1329,11 @@
       e.returnValue = '';
     }
   });
+
+  // ページ離脱時は BLE を明示的に切断し、BlueZ 側の“ゾンビ接続”残留を防ぐ
+  // （ゾンビ接続は次回の通知受信不可＝「受信なし」の主因）。pagehide が最も確実、
+  //  beforeunload も保険で。タブ切替では切らない（visibilitychange は使わない）。
+  const _disconnectBle = () => { try { PpgSource.disconnect(); } catch (e) {} };
+  window.addEventListener('pagehide', _disconnectBle);
+  window.addEventListener('beforeunload', _disconnectBle);
 })();
