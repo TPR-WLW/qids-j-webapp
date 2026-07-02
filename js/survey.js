@@ -9,22 +9,39 @@
  *  - severity[]:  { max, key, label, color, advice }（max は「この値以下」で区間判定）
  *  - intro / source / domainLabels: 画面表示用メタ情報
  *
- * すべて同一オリジンの fetch で読み込む（本アプリはローカルサーバ前提のため file:// 不要）。
+ * 読み込みは fetch を優先し、失敗時は surveys/bank.js のインライン版にフォールバックする
+ * （file:// でダブルクリック起動すると fetch が同一オリジン制約で失敗するため。
+ *   bank.js は node tools/gen-survey-bank.mjs で surveys/*.json から自動生成）。
  */
 const SurveyEngine = (() => {
   const BASE = 'surveys/';
 
+  // file:// フォールバック（surveys/bank.js が定義する window.SURVEY_BANK）
+  const bank = () => (typeof window !== 'undefined' && window.SURVEY_BANK) || null;
+
   async function loadManifest() {
-    const res = await fetch(BASE + 'manifest.json', { cache: 'no-cache' });
-    if (!res.ok) throw new Error('manifest fetch failed: ' + res.status);
-    const data = await res.json();
-    return Array.isArray(data.surveys) ? data.surveys : [];
+    try {
+      const res = await fetch(BASE + 'manifest.json', { cache: 'no-cache' });
+      if (!res.ok) throw new Error('manifest fetch failed: ' + res.status);
+      const data = await res.json();
+      return Array.isArray(data.surveys) ? data.surveys : [];
+    } catch (e) {
+      const b = bank();
+      if (b && Array.isArray(b.manifest)) return b.manifest;
+      throw e;
+    }
   }
 
   async function load(file) {
-    const res = await fetch(BASE + file, { cache: 'no-cache' });
-    if (!res.ok) throw new Error('survey fetch failed: ' + res.status + ' (' + file + ')');
-    return normalize(await res.json());
+    try {
+      const res = await fetch(BASE + file, { cache: 'no-cache' });
+      if (!res.ok) throw new Error('survey fetch failed: ' + res.status + ' (' + file + ')');
+      return normalize(await res.json());
+    } catch (e) {
+      const b = bank();
+      if (b && b.files && b.files[file]) return normalize(b.files[file]);
+      throw e;
+    }
   }
 
   function normalize(raw) {

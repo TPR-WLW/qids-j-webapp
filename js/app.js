@@ -713,7 +713,15 @@
     if (!ecgServerUp) {
       if (HeartHub.isEnabled('ppg')) {
         downloadClientSession(payload);
-        setS('ローカル保存サーバが無いため、PPG セッションをファイルでダウンロードしました（録画は「手動エクスポート」から）。', 'info');
+        // 録画もその場で自動DL（file:// / 静的配信ではサーバが永遠に来ないため、手動エクスポート任せにしない）
+        const vblob = state.useCamera ? FaceRecorder.getBlob() : null;
+        let videoNote = '';
+        if (vblob) {
+          const ext = FaceRecorder.getMime().includes('mp4') ? 'mp4' : 'webm';
+          downloadBlob(vblob, (payload.session || 'session') + '.' + ext);
+          videoNote = '録画も ' + ext + ' でダウンロードしました。';
+        }
+        setS('ローカル保存サーバが無いため、PPG セッションをファイルでダウンロードしました。' + videoNote, 'info');
       } else {
         setS('ローカル保存サーバが無いため、自動保存はスキップされました。必要に応じて下の「手動エクスポート」から保存してください。', 'info');
       }
@@ -743,7 +751,14 @@
     const fallbackToClient = (msg) => {
       if (HeartHub.isEnabled('ppg')) {
         downloadClientSession(payload);
-        setS(msg + ' PPG セッションをファイルでダウンロードしました。録画は「手動エクスポート」から保存してください。', false);
+        // 録画アップロードが未成功（payload.video 未設定）なら録画もその場でDLして取りこぼしを防ぐ
+        let videoNote = ' 録画は「手動エクスポート」から保存してください。';
+        if (blob && !payload.video) {
+          const vext = FaceRecorder.getMime().includes('mp4') ? 'mp4' : 'webm';
+          downloadBlob(blob, (payload.session || 'session') + '.' + vext);
+          videoNote = ' 録画も ' + vext + ' でダウンロードしました。';
+        }
+        setS(msg + ' PPG セッションをファイルでダウンロードしました。' + videoNote, false);
       } else {
         setS(msg + ' 下の「手動エクスポート」から保存してください。', false);
       }
