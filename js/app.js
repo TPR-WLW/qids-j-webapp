@@ -652,7 +652,8 @@
       interaction: HeartHub.buildInteraction(),   // 設問ごとの反応時間/滞在時間/回答変更履歴
       video: null,
       camera,
-      sync: { hubStartWall: HeartHub.startWall, ecgStartWall: EcgSource.startWall, recorderStartIso }
+      sync: { hubStartWall: HeartHub.startWall, ecgStartWall: EcgSource.startWall, recorderStartIso },
+      sentAt: Date.now()   // サーバが自時計と比較して clock_skew_ms を記録（ECG↔ブラウザ時計の同一性検証用）
     };
     HeartHub.attachSavePayload(payload);   // sources フラグ +（PPG 有効時）ppg:{beats, raw}
 
@@ -716,7 +717,20 @@
   function downloadClientSession(payload) {
     try {
       const out = { ...payload };
-      if (out.ppg && out.ppg.raw) out.ppg = { device: out.ppg.device || null, beats: out.ppg.beats, raw_samples: (out.ppg.raw.idx || []).length };
+      out.schema = 'qids-session-client-v1';   // クライアント直DL版：生入力のみ（HRV/phases はサーバ未算出。beats/segments から再計算可）
+      // サーバ保存の session.json とスキーマを揃える：
+      // ・イベント配列のキーは qids_events（サーバ/手動エクスポートと同一）
+      // ・ppg.beats は常に配列、件数は beats_count（サーバは beats_count + csv ポインタ）
+      out.qids_events = out.events; delete out.events;
+      if (out.ppg && out.ppg.raw) {
+        out.ppg = {
+          device: out.ppg.device || null,
+          beats: out.ppg.beats,
+          beats_count: out.ppg.beats_count != null ? out.ppg.beats_count : (out.ppg.beats || []).length,
+          rawAnchors: out.ppg.rawAnchors || [],
+          raw_samples: (out.ppg.raw.idx || []).length
+        };
+      }
       downloadBlob(new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' }), (payload.session || 'session') + '.session.json');
       const raw = PpgSource.getRawCsv();
       if (raw && raw.length > 12) downloadBlob(new Blob([raw], { type: 'text/csv' }), (payload.session || 'session') + '.ppg_raw.csv');
@@ -1177,7 +1191,10 @@
     if (!blob) return;
     const mime = FaceRecorder.getMime();
     const ext = mime.includes('mp4') ? 'mp4' : 'webm';
-    downloadBlob(blob, `qids-j_recording_${timestamp()}.${ext}`);
+    // セッション名で保存（サーバ保存と同じ <session>.<ext>）— 固定プレフィックス+DL時刻だと
+    // session.json と名前が食い違い、後から対応付けできなくなる。
+    const name = state.sessionName ? `${state.sessionName}.${ext}` : `qids-j_recording_${timestamp()}.${ext}`;
+    downloadBlob(blob, name);
   });
 
   // ---------- Downloads: video + session log ----------
@@ -1196,6 +1213,7 @@
     }
     return {
       ...data,
+      schema: 'qids-session-manual-v1',   // 手動エクスポート版：レコーダーログ + HeartHub 時系列（HRV 未算出）
       survey: { id: survey.id, name: survey.name },
       result: state.result,
       answers: state.answers.map((a, i) => ({ q: i + 1, title: survey.questions[i].title, score: a })),
@@ -1210,9 +1228,13 @@
       ppg: HeartHub.isEnabled('ppg') ? {
         device: (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo()) || null,
         beats: PpgSource.getBeats(),
+        beats_count: PpgSource.getBeats().length,
+        rawAnchors: (PpgSource.getRawAnchors && PpgSource.getRawAnchors()) || [],
         raw_samples: (PpgSource.getRaw().idx || []).length   // 生波形は ppg_raw.csv 側で保存
       } : null,
-      sync: { hubStartWall: HeartHub.startWall, ecgStartWall: EcgSource.startWall, recorderStartIso: data.meta?.sessionStart || null }
+      sync: { hubStartWall: HeartHub.startWall, ecgStartWall: EcgSource.startWall, recorderStartIso: data.meta?.sessionStart || null },
+      // 1 ファイルに 2 つの時間基準が同居するため、変換規則をデータ自体に明記：
+      timebase_note: 'events[].t / questionSegments[].activeTimeRanges はレコーダー相対 ms（ゼロ点 = sync.recorderStartIso）。qids_events[].ts / segments[].startTs / ppg.beats[].t は epoch ms（墙钟）。変換: wallMs = Date.parse(sync.recorderStartIso) + t'
     };
   }
 

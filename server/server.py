@@ -536,18 +536,24 @@ class AcquisitionManager:
                 continue
             rows.append({
                 "host_time_iso": iso,
-                "ecg_raw": rri,
+                "ecg_raw": round(float(rri), 1),        # 0.1ms 精度（センサ分解能 10ms → これ以上の桁は無意味）
                 "ecg_mode_label": "rri",
                 "sampling_freq": 1,
                 "packet_id": i,
+                "sample_index": b.get("idx"),           # ppg_raw.csv の idx との結合キー（新形式 beats のみ）
             })
         return rows
 
     def _write_ppg_csv(self, session: str, rows: list[dict[str, Any]]) -> None:
-        """RRI 行を再解析可能な CSV で保存（load_rows + hrv_metrics でそのまま読める）。"""
-        lines = ["host_time_iso,ecg_raw,ecg_mode_label,sampling_freq,packet_id"]
+        """RRI 行を再解析可能な CSV で保存（load_rows + hrv_metrics でそのまま読める）。
+
+        sample_index 列は当該心拍のピーク idx（ppg_raw.csv の idx との結合キー）。
+        旧形式 beats（idx 無し）では空欄。
+        """
+        lines = ["host_time_iso,ecg_raw,ecg_mode_label,sampling_freq,packet_id,sample_index"]
         for r in rows:
-            lines.append(f'{r["host_time_iso"]},{r["ecg_raw"]},rri,1,{r["packet_id"]}')
+            si = r.get("sample_index")
+            lines.append(f'{r["host_time_iso"]},{r["ecg_raw"]},rri,1,{r["packet_id"]},{si if si is not None else ""}')
         (self.data_dir / (session + ".ppg.csv")).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _write_ppg_raw_csv(self, session: str, raw: dict[str, Any]) -> int:
@@ -595,7 +601,14 @@ class AcquisitionManager:
         ppg_rows = self._ppg_beats_to_rows(ppg_beats)
         ppg: Optional[dict[str, Any]] = None
         if ppg_beats or ppg_raw.get("idx"):
-            ppg = {"beats": len(ppg_beats), "csv": None, "raw_csv": None, "raw_samples": 0}
+            # beats_count（件数）に統一：クライアント直DL版では beats が配列なので、
+            # 同じキー "beats" に int/array が混在しないようにする。
+            ppg = {
+                "beats_count": len(ppg_beats),
+                "device": ppg_payload.get("device"),           # 個体識別（複数台環境）
+                "rawAnchors": ppg_payload.get("rawAnchors") or [],  # idx↔墙钟アンカー（ppg_raw.csv の時刻復元用）
+                "csv": None, "raw_csv": None, "raw_samples": 0,
+            }
             if ppg_rows:
                 self._write_ppg_csv(session, ppg_rows)
                 ppg["csv"] = session + ".ppg.csv"
@@ -606,9 +619,16 @@ class AcquisitionManager:
                 ppg["raw_samples"] = self._write_ppg_raw_csv(session, ppg_raw)
                 ppg["raw_csv"] = session + ".ppg_raw.csv"
 
+        # ブラウザ(Date.now)とサーバOS時計の差を記録（ECG host_time と各 wall-clock 系列の
+        # 「同一時計」前提の検証用。localhost 運用なら ≈ 通信遅延のみで数 ms 以内のはず）。
+        sent_at = payload.get("sentAt")
+        clock_skew_ms = int(time.time() * 1000 - float(sent_at)) if sent_at else None
+
         out = {
+            "schema": "qids-session-server-v1",   # サーバ版：HRV/phases 等の解析ブロック込み
             "session": session,
             "saved": datetime.now().isoformat(timespec="seconds"),
+            "clock_skew_ms": clock_skew_ms,
             "survey": payload.get("survey"),
             "subject": payload.get("subject") or {},
             "sources": payload.get("sources"),

@@ -191,6 +191,21 @@ const PpgSource = (() => {
   // ============================================================
   //                     包解析 / 检测
   // ============================================================
+  // ---- idx↔墙钟锚点（時刻軸の要）----
+  // firmware の idx（100Hz サンプル計数）と墙钟を結ぶアンカー。1 連続性エポックに 1 個。
+  // ・beats の t はこのアンカーから t = wall + (peakIdx - idx)*10ms で算出
+  //   → パケット到着時刻の量子化（BLE バッチ ~160ms）に汚されず、t の差分が rri と厳密に一致する。
+  // ・録音中のアンカー列 rawAnchors を保存 → ppg_raw.csv（idx のみ）を事後に墙钟へ変換可能にする。
+  //   精度: アンカー設定時の BLE 伝送遅延（数十 ms、定数寄り）+ 水晶ドリフト（<0.1ms/s）。
+  let epochAnchor = null;     // {idx, wall} 現在の連続性エポックのアンカー
+  let rawAnchors = [];        // 録音セッション中の全アンカー（保存用）
+
+  function _setAnchor(firstIdx, n) {
+    // パケット到着時刻 ≈ パケット最終サンプルの発生時刻 → 先頭サンプルは (n-1)*10ms 前
+    epochAnchor = { idx: firstIdx, wall: Date.now() - (n - 1) * (1000 / FS) };
+    if (recording) rawAnchors.push({ ...epochAnchor });
+  }
+
   // 二进制小端: [u32 firstIdx][u8 n][n×(u32 ir, u32 red)]
   function onPacket(e) {
     const dv = e.target.value;
@@ -199,11 +214,14 @@ const PpgSource = (() => {
     const first = dv.getUint32(0, true), n = dv.getUint8(4);
     // 连续性判定を 2 段階に：小さな前向きギャップ（<=3s 丢包）は dcEMA/包络を温存し RR 計時だけ断つ
     // （full reset だと dcEMA が ~2s 再収敛して波形・HR が固まる）。大ギャップ/再起動時のみ整器复位。
-    if (nextIdx !== null && first !== nextIdx) {
+    if (nextIdx === null) {
+      _setAnchor(first, n);                              // 接続後の初パケット：アンカー確立
+    } else if (first !== nextIdx) {
       const gap = first - nextIdx;
-      if (gap > 0 && gap <= 300) breakRRContinuity();   // 前向き小丢包：跨ギャップの RR のみ無効化
-      else resetContinuity();                            // 大ギャップ or index 再起動：整器复位
+      if (gap > 0 && gap <= 300) breakRRContinuity();   // 前向き小丢包：idx 連続性は保たれる → アンカー維持
+      else { resetContinuity(); _setAnchor(first, n); } // 大ギャップ or 再起動：idx 空間が変わる → アンカー再設定
     }
+    if (recording && rawAnchors.length === 0 && epochAnchor) rawAnchors.push({ ...epochAnchor });   // begin が先行した場合
     for (let i = 0; i < n; i++) {
       const off = 5 + i * 8;
       if (off + 8 > dv.byteLength) break;
@@ -263,9 +281,13 @@ const PpgSource = (() => {
     rrRejectStreak = 0;
     rrSeries.push({ idx, rr }); if (rrSeries.length > 600) rrSeries.shift();
     if (recording) {
-      // 峰相对当前样本的微小偏移换算成墙钟（一般 < 200ms，可忽略，但顺手修正）
-      const lagMs = (idx - peakIdx) / FS * 1000;
-      beats.push({ t: Date.now() - lagMs, rri: rr });
+      // 墙钟 t は idx↔wall アンカーから算出（パケット到着時刻の直接使用をやめる）。
+      // これにより t の差分が rri と厳密に一致し（同一エポック内）、BLE バッチ到着の
+      // ±160ms 量子化ノイズが時刻軸に入らない。精度は ms 単位で十分（センサ分解能 10ms）。
+      const t = epochAnchor
+        ? epochAnchor.wall + (peakIdx - epochAnchor.idx) * (1000 / FS)
+        : Date.now() - (idx - peakIdx) / FS * 1000;   // フォールバック（アンカー未確立は実質起きない）
+      beats.push({ t: Math.round(t), rri: Math.round(rr * 10) / 10, idx: Math.round(peakIdx * 100) / 100 });
     }
   }
 
@@ -320,6 +342,7 @@ const PpgSource = (() => {
   function begin(wall) {
     startWall = wall || Date.now();
     beats = []; rawIdx = []; rawIr = []; rawRed = [];
+    rawAnchors = epochAnchor ? [{ ...epochAnchor }] : [];   // 現在のアンカーをセッション先頭アンカーとして記録
     // 検出器はリセットしない：接続確認中に収束済みの dcEMA/包络/中央値をそのまま使う。
     // フルリセットすると dcEMA 再収束の ~2-5 秒間ベースライン窓の冒頭に心拍が入らない。
     // （セッションデータは recording フラグと beats/raw のクリアで分離されている）
@@ -333,6 +356,7 @@ const PpgSource = (() => {
   function reset() {
     recording = false; startWall = null;
     beats = []; rawIdx = []; rawIr = []; rawRed = [];
+    rawAnchors = []; epochAnchor = null;
     resetDetect();
     lastIRv = 0; lastFinger = false; curSpo2 = null; lastTs = 0;
   }
@@ -381,12 +405,15 @@ const PpgSource = (() => {
     };
   }
 
-  function getBeats() { return beats.map(b => ({ t: b.t, rri: b.rri })); }
+  function getBeats() { return beats.map(b => ({ t: b.t, rri: b.rri, idx: b.idx })); }   // idx = ppg_raw.csv との結合キー
   function getRaw() { return { idx: rawIdx.slice(), ir: rawIr.slice(), red: rawRed.slice() }; }
+  // 録音中の idx↔墙钟アンカー列（ppg_raw.csv の idx を墙钟へ変換する唯一の橋。
+  // 変換式: wall(idx) = anchor.wall + (idx - anchor.idx)*10ms、idx 以上で最後のアンカーを使用）
+  function getRawAnchors() { return rawAnchors.map(a => ({ idx: a.idx, wall: Math.round(a.wall) })); }
   function getRawCsv() {
     const lines = ['idx,ir,red'];
     for (let i = 0; i < rawIdx.length; i++) lines.push(rawIdx[i] + ',' + rawIr[i] + ',' + rawRed[i]);
-    return lines.join('\n');
+    return lines.join('\n') + '\n';   // 末尾改行（サーバ側 writer と統一）
   }
 
   // ---- 短时信号测试（装着確認用）。返回测试窗口内收到的样本数 + 当前 HR ----
@@ -435,7 +462,7 @@ const PpgSource = (() => {
   return {
     init, isSupported, isConnected, connect, disconnect, startTest,
     probeGranted, hasGranted, getSps, getDeviceInfo,
-    begin, stop, reset, getLive, getBeats, getRaw, getRawCsv,
+    begin, stop, reset, getLive, getBeats, getRaw, getRawCsv, getRawAnchors,
     attachCanvas, drawWave
   };
 })();

@@ -225,9 +225,12 @@ const HeartHub = (() => {
   function attachSavePayload(payload) {
     payload.sources = { ecg: enabled.ecg, ppg: enabled.ppg };
     if (enabled.ppg) {
+      const beats = PpgSource.getBeats();
       payload.ppg = {
         device: (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo()) || null,   // 個体識別（複数台環境の監査用）
-        beats: PpgSource.getBeats(),
+        beats,
+        beats_count: beats.length,
+        rawAnchors: (PpgSource.getRawAnchors && PpgSource.getRawAnchors()) || [],  // idx↔墙钟アンカー（生波形の時刻復元用）
         raw: PpgSource.getRaw()
       };
     }
