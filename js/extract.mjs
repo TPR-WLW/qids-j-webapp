@@ -436,6 +436,8 @@ function questionAtAbsoluteTime(sessionLog, tAbs) {
   for (const s of segs) {
     if (s.activeTimeRanges?.some(([a, b]) => tAbs >= a && tAbs < b)) return s.q;
   }
-  // Before first question (baseline etc.): report q=-1 (but our existing analyze page expects q=0 minimum; use 0)
-  return segs[0]?.q ?? 0;
+  // どの設問窓にも入らない時刻（ベースライン・安静・末尾）は q=-1（非設問）を返す。
+  // 0 を返すと第1問の実フレームと区別できなくなる。analyze 側は activeTimeRanges で
+  // フレームを選ぶため q=-1 は安全（設問集計に混入しない）。
+  return -1;
 }

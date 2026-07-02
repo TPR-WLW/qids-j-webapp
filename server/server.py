@@ -53,6 +53,7 @@ def per_question_hrv(rows: list[dict[str, Any]], segments: list[dict[str, Any]])
         out.append({
             "q": seg.get("q"),
             "questionNumber": seg.get("questionNumber"),
+            "visit": seg.get("visit"),   # 再訪窓の識別（同一設問の複数行を区別可能に）
             "label": seg.get("label"),
             "startTs": a,
             "endTs": b,

@@ -82,19 +82,37 @@ const PpgSource = (() => {
     characteristic.addEventListener('characteristicvaluechanged', onPacket);
   }
 
+  // 最後に使ったデバイスの記憶（複数台環境で「別の個体に勝手に繋がる」事故の防止）
+  const LAST_DEVICE_KEY = 'qids-j-ppg-last-device-v1';
+  function _loadLastDevice() {
+    try { return JSON.parse(localStorage.getItem(LAST_DEVICE_KEY) || 'null'); } catch (e) { return null; }
+  }
+  function _saveLastDevice(dev) {
+    try { localStorage.setItem(LAST_DEVICE_KEY, JSON.stringify({ id: dev.id || null, name: dev.name || null })); } catch (e) {}
+  }
+
   // 以前このオリジンに許可された XIAO デバイスを（選択ダイアログ無しで）探す。
-  // 対応していない／未許可なら null。permission は永続化されるため次回以降も返る。
+  // 複数台が許可済みの場合は「前回使った個体」に一致するものだけを返し、
+  // 一致が無ければ null（＝選択ダイアログを出させる）。1台だけならそれを返す。
   async function _findGranted() {
     if (!navigator.bluetooth.getDevices) return null;   // 旧 Chrome / new-permissions-backend 無効時
     try {
-      const devs = await navigator.bluetooth.getDevices();
-      return devs.find(d => (d.name || '').startsWith(NAME_PREFIX)) || null;
+      const devs = (await navigator.bluetooth.getDevices()).filter(d => (d.name || '').startsWith(NAME_PREFIX));
+      if (devs.length === 0) return null;
+      if (devs.length === 1) return devs[0];
+      const last = _loadLastDevice();
+      if (last) {
+        const hit = devs.find(d => (last.id && d.id === last.id) || (last.name && d.name === last.name));
+        if (hit) return hit;
+      }
+      return null;   // 複数台かつ前回の個体が特定できない → 誤接続を避けて選択ダイアログへ
     } catch (e) { return null; }
   }
 
   // 起動時に一度呼ぶ：既授権デバイスの有無をキャッシュ（UI が「再接続」表示に使う）。
   async function probeGranted() { knownDevice = await _findGranted(); return !!knownDevice; }
   function hasGranted() { return !!knownDevice; }
+  function getDeviceInfo() { return device ? { id: device.id || null, name: device.name || null } : null; }
 
   function _bindDevice(dev) {
     device = dev;
@@ -102,7 +120,17 @@ const PpgSource = (() => {
     device.addEventListener('gattserverdisconnected', _onDisconnect);
   }
 
-  async function connect() {
+  let _connecting = null;   // 進行中の connect Promise（再入ガード：自動リカバリと手動クリックの競合防止）
+
+  // opts.noPrompt: ユーザージェスチャ無しの文脈（自動リカバリ等）では選択ダイアログに
+  // フォールバックしない（requestDevice はジェスチャ必須で必ず失敗するため）。
+  function connect(opts) {
+    if (_connecting) return _connecting;   // 同時呼び出しは同じ接続処理を待つ
+    _connecting = _connectImpl(opts || {});
+    return _connecting.finally(() => { _connecting = null; });
+  }
+
+  async function _connectImpl(opts) {
     if (!isSupported()) throw new Error('このブラウザは Web Bluetooth 非対応です（Chrome / Edge をご利用ください）。');
     // ① 既授権デバイスがあれば選択ダイアログ無しで再接続（1タップ）
     const granted = knownDevice || await _findGranted();
@@ -112,14 +140,18 @@ const PpgSource = (() => {
         wantConnected = true;
         await _gattConnect();
         knownDevice = device;
+        _saveLastDevice(device);
         onLog('info', 'PPG 再接続（既知デバイス）: ' + (device.name || NAME_PREFIX));
         resetDetect();
         return true;
       } catch (e) {
         // 既知デバイスが圏外／電源オフ等 → 選択ダイアログにフォールバック
-        onLog('warn', '既知デバイスへの接続に失敗、選択に切替: ' + (e.message || e));
+        onLog('warn', '既知デバイスへの接続に失敗' + (opts.noPrompt ? '' : '、選択に切替') + ': ' + (e.message || e));
         wantConnected = false; device = null;
+        if (opts.noPrompt) throw e;
       }
+    } else if (opts.noPrompt) {
+      throw new Error('既授権デバイスが見つかりません（選択ダイアログはジェスチャ必須のためスキップ）');
     }
     // ② 初回 or フォールバック：選択ダイアログで許可を得る
     _bindDevice(await navigator.bluetooth.requestDevice({
@@ -129,6 +161,7 @@ const PpgSource = (() => {
     wantConnected = true;
     await _gattConnect();
     knownDevice = device;
+    _saveLastDevice(device);
     onLog('info', 'PPG 接続済み: ' + (device.name || NAME_PREFIX));
     resetDetect();
     return true;
@@ -217,8 +250,17 @@ const PpgSource = (() => {
     pushWave(idx, acLP, isBeat, true);
   }
 
+  let rrRejectStreak = 0;   // 連続リジェクト数（中央値ロックアウトからの脱出用）
+
   function recordBeat(idx, peakIdx, rr) {
-    if (!acceptRR(rr)) return;
+    if (!acceptRR(rr)) {
+      // 中央値ロックアウト対策：指を離して戻した直後などに HR が >30% 変化していると、
+      // 古い中央値が更新されないまま全拍を拒否し続ける（UI は正常に見えるのに beats が増えない）。
+      // 連続 6 拍リジェクトで中央値窓を捨てて再学習させる。
+      if (++rrRejectStreak >= 6) { rrSeries = []; rrRejectStreak = 0; onLog('warn', 'PPG RR 中央値を再学習（連続リジェクト）'); }
+      return;
+    }
+    rrRejectStreak = 0;
     rrSeries.push({ idx, rr }); if (rrSeries.length > 600) rrSeries.shift();
     if (recording) {
       // 峰相对当前样本的微小偏移换算成墙钟（一般 < 200ms，可忽略，但顺手修正）
@@ -240,7 +282,9 @@ const PpgSource = (() => {
   function pushWave(idx, v, beat, finger) { wave.push({ idx, v, beat, finger }); if (wave.length > 500) wave.shift(); }
 
   function breakRRContinuity() { lastPeakIdx = null; }   // RR 計時だけ断つ（自适应滤波器 dcEMA/包络は温存）
-  function resetContinuity() { dcEMA = null; acLP = acP2 = acP1 = 0; envPos = envNeg = 0; lastPeakIdx = null; }
+  // 完全リセット（指離し・大ギャップ・再起動）：中央値窓も捨てる — 戻ってきた時に
+  // 古い HR の中央値で新しい拍を弾き続けないように。
+  function resetContinuity() { dcEMA = null; acLP = acP2 = acP1 = 0; envPos = envNeg = 0; lastPeakIdx = null; rrSeries = []; rrRejectStreak = 0; }
   function resetDetect() { nextIdx = null; resetContinuity(); rrSeries = []; wave = []; spIR = []; spRED = []; curSpo2 = null; }
 
   // ============================================================
@@ -276,7 +320,9 @@ const PpgSource = (() => {
   function begin(wall) {
     startWall = wall || Date.now();
     beats = []; rawIdx = []; rawIr = []; rawRed = [];
-    resetDetect();
+    // 検出器はリセットしない：接続確認中に収束済みの dcEMA/包络/中央値をそのまま使う。
+    // フルリセットすると dcEMA 再収束の ~2-5 秒間ベースライン窓の冒頭に心拍が入らない。
+    // （セッションデータは recording フラグと beats/raw のクリアで分離されている）
     recording = true;
     onLog('info', 'PPG 記録開始');
   }
@@ -388,7 +434,7 @@ const PpgSource = (() => {
 
   return {
     init, isSupported, isConnected, connect, disconnect, startTest,
-    probeGranted, hasGranted, getSps,
+    probeGranted, hasGranted, getSps, getDeviceInfo,
     begin, stop, reset, getLive, getBeats, getRaw, getRawCsv,
     attachCanvas, drawWave
   };

@@ -50,6 +50,12 @@ const FaceRecorder = (() => {
    */
   async function start(options) {
     try {
+      // 新しいセッションはクリーンなログで開始する（前の被験者のイベント/メタの持ち越し防止。
+      // module-level の events はこれまでリセットされておらず、同一ページで 2 人目以降の
+      // セッションログに前の人の全イベントが混入していた）。
+      events.length = 0;
+      currentQuestionIndex = 0;
+      _finalCameraMeta = null;
       showPanel(true);
       setStatus('カメラへアクセス中…');
       const width     = options?.width     || 1280;   // 720p default
@@ -163,6 +169,7 @@ const FaceRecorder = (() => {
         recordedMime,
         eventTypes: ['question_enter', 'answer_selected', 'question_finalize',
                      'baseline_start', 'baseline_end',
+                     'rest_pre_start', 'rest_pre_end', 'rest_post_start', 'rest_post_end',
                      'crisis_modal_shown', 'crisis_modal_closed'],
         device: collectDeviceMeta(),
         notes: [
@@ -312,7 +319,15 @@ const FaceRecorder = (() => {
       }
     }
     if (currentQ !== null && currentEnter !== null) {
-      getSeg(currentQ).activeTimeRanges.push([currentEnter, lastT]);
+      // 最終設問の窓を lastT（＝全イベントの最大 t、post-rest を含む）まで延ばさない。
+      // その設問の question_finalize、無ければ rest_post_start で終端（hub.js と同じ扱い）。
+      const s = getSeg(currentQ);
+      let end = (s.finalizeTime != null && s.finalizeTime >= currentEnter) ? s.finalizeTime : null;
+      if (end === null) {
+        const rp = events.find(f => f.event === 'rest_post_start' && typeof f.t === 'number' && f.t >= currentEnter);
+        end = rp ? rp.t : lastT;
+      }
+      s.activeTimeRanges.push([currentEnter, end]);
     }
 
     const result = [];
@@ -327,8 +342,20 @@ const FaceRecorder = (() => {
     return result;
   }
 
+  // セッション間の完全リセット：イベントログ・録画 Blob（0.7〜1.5GB になり得る）・
+  // カメラメタを破棄する。resetToStart()（次の被験者へ移る時）から呼ぶ。
+  function reset() {
+    events.length = 0;
+    currentQuestionIndex = 0;
+    recordedBlob = null;
+    chunks = [];
+    _finalCameraMeta = null;
+    sessionStartIso = null;
+    recorderFirstDataMs = null;
+  }
+
   return {
-    init, start, stop,
+    init, start, stop, reset,
     setQuestionIndex, logEvent,
     getBlob, getMime,
     getSessionLog,

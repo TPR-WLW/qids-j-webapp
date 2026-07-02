@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="theme-color" content="#5b8fb9">
-  <meta name="description" content="QIDS-J（簡易抑うつ症状尺度 日本語版）に基づく Web セルフチェック。任意で Web カメラを使って顔の 478 点ランドマーク・52 ブレンドシェイプ・頭部姿勢を 30fps で記録できます。すべての処理はブラウザ内で完結し、データは外部送信されません。">
+  <meta name="description" content="QIDS-J（簡易抑うつ症状尺度 日本語版）に基づく Web セルフチェック。任意で Web カメラを使って顔の 478 点ランドマーク・52 ブレンドシェイプ・頭部姿勢を 30fps で記録できます。データはこの端末内（ブラウザおよび実験用ローカルサーバ）にのみ保存され、外部のクラウド等へは送信されません。">
   <meta name="author" content="Liangwen Wang">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://tpr-wlw.github.io/qids-j-webapp/">
@@ -322,7 +322,7 @@
           </label>
           <label class="check">
             <input type="checkbox" id="consentData">
-            <span>データは <strong>ブラウザ内のみ</strong> で処理・保持されることを理解しました</span>
+            <span>データは <strong>この端末内（ブラウザおよび実験用ローカルサーバ）</strong> にのみ保存され、外部のクラウド等へ送信されないことを理解しました</span>
           </label>
           <label class="check camera-consent">
             <input type="checkbox" id="consentCamera">
@@ -388,7 +388,7 @@
       <!-- 操作者向けの控えめなタイマー／スキップ（被験者は十字に集中） -->
       <div class="rest-corner">
         <span id="restPhaseLabel">安静</span>
-        <span id="restCountdown">3:00</span>
+        <span id="restCountdown">--:--</span>
         <button id="restSkip" type="button">スキップ ›</button>
       </div>
     </section>
@@ -447,9 +447,11 @@
         <!-- done section (shown after successful extraction; user-gesture to open popup) -->
         <div id="extractDoneBox" hidden>
           <p class="extract-success">✅ 抽出が完了しました。下のボタンから分析ビューアーを開いてください。</p>
+          <p id="extractPersistNote" class="muted tiny"></p>
           <p class="muted tiny">※ ブラウザのポップアップブロックに引っかかるのを防ぐため、<strong>このボタンをクリックして</strong>新しいタブを開いてください。</p>
           <div class="btn-row">
             <a id="extractOpenBtn" href="#" target="_blank" rel="noopener" class="btn btn-primary">🔬 分析ビューアーを開く（新タブ）</a>
+            <button id="extractDownloadBtn" class="btn btn-outline">💾 特徴データを保存 (json)</button>
             <button id="extractOpenSameTabBtn" class="btn btn-outline">このタブで開く</button>
             <button id="extractCloseBtn" class="btn btn-ghost">閉じる</button>
           </div>

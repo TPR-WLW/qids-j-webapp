@@ -21,6 +21,12 @@
       const n = state.survey ? state.survey.questions.length : 0;
       if (!Array.isArray(obj.answers) || obj.answers.length !== n) return null;
       if (state.survey && obj.surveyId && obj.surveyId !== state.survey.id) return null;
+      // 被験者が違えば絶対に復元しない（別人の回答を引き継ぐ事故＝クロス被験者汚染の防止）。
+      // 旧フォーマット（subjectId 無し）も安全側に倒して破棄する。
+      const curId = (state.subject && state.subject.id) ? sanitizeId(state.subject.id) : null;
+      if (!obj.subjectId || !curId || obj.subjectId !== curId) { localStorage.removeItem(PERSIST_KEY); return null; }
+      // カメラ有りセッションの途中回答は、映像・基線が対応しないため復元対象にしない。
+      if (obj.useCamera) { localStorage.removeItem(PERSIST_KEY); return null; }
       return obj;
     } catch (e) { return null; }
   }
@@ -30,6 +36,8 @@
       localStorage.setItem(PERSIST_KEY, JSON.stringify({
         savedAt: Date.now(),
         surveyId: state.survey ? state.survey.id : null,
+        subjectId: (state.subject && state.subject.id) ? sanitizeId(state.subject.id) : null,   // 復元は同一被験者のみ
+        useCamera: !!state.useCamera,
         current: state.current,
         answers: state.answers
       }));
@@ -502,7 +510,8 @@
     const sinceConnect = ppgConnectedAt ? (now - ppgConnectedAt) : 0;
     if (live.online) {
       setPpgDot('ok');
-      setPpgStatusText(live.finger ? '受信中' : '受信中（指先を光窓に当ててください）');
+      const devName = (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo() || {}).name || '';
+      setPpgStatusText((live.finger ? '受信中' : '受信中（指先を光窓に当ててください）') + (devName ? ' — ' + devName : ''));
       if (ppgWarn) ppgWarn.style.display = 'none';
       ppgLastOnlineAt = now;
       ppgAutoRecovered = false;   // 復帰したので次のゾンビにも自動リカバリ可
@@ -551,14 +560,24 @@
     try {
       PpgSource.disconnect();
       await new Promise(r => setTimeout(r, 900));   // BlueZ が ACL を落とす猶予
-      await PpgSource.connect();
-      ppgConnectedAt = Date.now(); ppgEverOnline = false;   // 占有検出タイマーを再スタート
-    } catch (e) {
-      console.info('[PPG] auto-recover failed:', e && (e.message || e));
+      // 1 回きりだと「デバイス再起動中で 1 回目が失敗 → 以後 PPG 死亡」になるため、
+      // バックオフ付きで最大 5 回再試行。ジェスチャ無し文脈なので noPrompt
+      // （選択ダイアログへのフォールバックは必ず失敗するのでスキップ）。
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          await PpgSource.connect({ noPrompt: true });
+          ppgConnectedAt = Date.now(); ppgEverOnline = false;   // 占有検出タイマーを再スタート
+          return;
+        } catch (e) {
+          console.info(`[PPG] auto-recover attempt ${attempt}/5 failed:`, e && (e.message || e));
+          if (attempt < 5) await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
+      }
     } finally { ppgRecovering = false; }
   }
   [devEcg, devPpg].forEach(el => el && el.addEventListener('change', applyDeviceSelection));
   ppgConnectBtn?.addEventListener('click', async () => {
+    if (ppgRecovering) { updatePpgStatus(); return; }   // 自動リカバリ中の手動操作は無視（connect 競合の防止）
     if (PpgSource.isConnected()) {
       PpgSource.disconnect();
       ppgConnectedAt = 0; ppgEverOnline = false; ppgFlashUntil = 0; ppgAutoRecovered = false;
@@ -649,34 +668,51 @@
 
     // 1) 録画アップロード（カメラ使用時）
     const blob = state.useCamera ? FaceRecorder.getBlob() : null;
+    let videoUploadFailed = false;
     if (blob && session) {
       const ext = FaceRecorder.getMime().includes('mp4') ? 'mp4' : 'webm';
       const videoName = session + '.' + ext;
-      try { await fetch('/api/upload-video?name=' + encodeURIComponent(videoName), { method: 'POST', body: blob }); payload.video = videoName; }
-      catch (e) { console.warn('video upload failed', e); }
+      try {
+        const vres = await fetch('/api/upload-video?name=' + encodeURIComponent(videoName), { method: 'POST', body: blob });
+        // HTTP エラー（500/413 等）でも fetch は resolve する。res.ok を確認しないと
+        // 実在しない動画ファイル名が session.json に記録される。
+        if (vres.ok) payload.video = videoName;
+        else { videoUploadFailed = true; console.warn('video upload failed: HTTP', vres.status); }
+      } catch (e) { videoUploadFailed = true; console.warn('video upload failed', e); }
     }
 
     // 2) 統合 session.json + answers.csv +（ECG/PPG）設問別 HRV をサーバ側で算出
+    // サーバがページ読込後に落ちた場合（ecgServerUp は最大 5 秒前の状態）、ここで失敗すると
+    // PPG データの保存先が消える → クライアントDLにフォールバックして絶対にデータを失わない。
+    const fallbackToClient = (msg) => {
+      if (HeartHub.isEnabled('ppg')) {
+        downloadClientSession(payload);
+        setS(msg + ' PPG セッションをファイルでダウンロードしました。録画は「手動エクスポート」から保存してください。', false);
+      } else {
+        setS(msg + ' 下の「手動エクスポート」から保存してください。', false);
+      }
+    };
     try {
       const res = await fetch('/api/save-session', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
       });
       const ct = res.headers.get('content-type') || '';
       if (!res.ok || !ct.includes('application/json')) {
-        setS('保存に失敗しました（ローカルサーバに接続できません）。start.bat で起動するか、下の「手動エクスポート」をご利用ください。', false);
+        fallbackToClient('サーバ保存に失敗しました（ローカルサーバに接続できません）。');
         return;
       }
       const r = await res.json();
-      if (r.error) { setS('保存に失敗しました: ' + r.error, false); return; }
-      setS(`✓ 保存しました（${r.files?.length || 0} ファイル・ECG ${r.ecg_samples || 0}・PPG ${r.ppg_beats || 0} 拍・設問別HRV ${r.per_question || 0}）\n保存先: ${r.dir}`, true);
-    } catch (e) { setS('保存に失敗しました: ' + e, false); }
+      if (r.error) { fallbackToClient('サーバ保存に失敗しました: ' + r.error + '。'); return; }
+      const videoNote = videoUploadFailed ? '\n⚠ 録画のアップロードに失敗しました — 「手動エクスポート」から動画を保存してください。' : '';
+      setS(`✓ 保存しました（${r.files?.length || 0} ファイル・ECG ${r.ecg_samples || 0}・PPG ${r.ppg_beats || 0} 拍・設問別HRV ${r.per_question || 0}）\n保存先: ${r.dir}${videoNote}`, videoUploadFailed ? false : true);
+    } catch (e) { fallbackToClient('サーバ保存に失敗しました: ' + (e.message || e) + '。'); }
   }
 
   // PPG-only（サーバ無し）用：セッション JSON と PPG 生波形 CSV をブラウザから直接DL
   function downloadClientSession(payload) {
     try {
       const out = { ...payload };
-      if (out.ppg && out.ppg.raw) out.ppg = { beats: out.ppg.beats, raw_samples: (out.ppg.raw.idx || []).length };
+      if (out.ppg && out.ppg.raw) out.ppg = { device: out.ppg.device || null, beats: out.ppg.beats, raw_samples: (out.ppg.raw.idx || []).length };
       downloadBlob(new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' }), (payload.session || 'session') + '.session.json');
       const raw = PpgSource.getRawCsv();
       if (raw && raw.length > 12) downloadBlob(new Blob([raw], { type: 'text/csv' }), (payload.session || 'session') + '.ppg_raw.csv');
@@ -685,6 +721,7 @@
 
   // ---------- Intro screen ----------
   function updateStartButtonsDisabled() {
+    if (sessionStarting) return;   // 開始処理中は相互ロックを優先（同意チェック操作でロックが外れないように）
     const baseOk = consentMedical.checked && consentAge.checked && consentData.checked;
     startNoBtn.disabled  = !baseOk;
     startCamBtn.disabled = !(baseOk && consentCamera.checked);
@@ -754,12 +791,23 @@
   [restPreEl, restPostEl].forEach(el => el?.addEventListener('change', saveRestSettings));
   loadRestSettings();
 
+  // セッション開始の相互ロック：カメラ許可ダイアログが開いている間に
+  // もう一方の開始ボタンを押すと 2 つの開始フローが交錯し、2 回目の beginSession が
+  // 進行中の回答・時間線を破壊する。開始処理中は両ボタンを無効化する。
+  let sessionStarting = false;
+  function lockStartButtons(lock) {
+    sessionStarting = lock;
+    if (startCamBtn) startCamBtn.disabled = lock;
+    if (startNoBtn) startNoBtn.disabled = lock;
+  }
+
   startCamBtn.addEventListener('click', async () => {
+    if (sessionStarting) return;
     if (!FaceRecorder.isSupported()) {
       alert('お使いのブラウザはカメラ録画に対応していません。\n「カメラを使わずに開始」でお進みください。');
       return;
     }
-    startCamBtn.disabled = true;
+    lockStartButtons(true);
     startCamBtn.innerHTML = '起動中…';
     const res = RESOLUTIONS[camResSel?.value] || RESOLUTIONS['720'];
     const fps = parseInt(camFpsSel?.value || '30', 10);
@@ -768,11 +816,11 @@
     if (ok) {
       state.useCamera = true;
       await beginSession();        // ECG 採集を開始（ベースラインも記録）
-      await runBaselineCapture();  // 3秒の表情ベースライン撮影
-      await runRestMeasurement('pre');  // 安静時測定（前・3分）
+      await runBaselineCapture();  // 表情ベースライン撮影
+      await runRestMeasurement('pre');  // 安静時測定（前）
       goQuiz();
     } else {
-      startCamBtn.disabled = false;
+      lockStartButtons(false);
       startCamBtn.innerHTML = '<span class="ic">●</span> カメラを使って開始';
       alert('カメラを起動できませんでした。ブラウザのカメラ許可設定をご確認いただくか、「カメラを使わずに開始」をお選びください。');
     }
@@ -782,6 +830,10 @@
   async function runBaselineCapture() {
     switchScreen('baseline');
     const DURATION_MS = 3000;
+    // 前の被験者の「完了」表示・リングの残留をクリア
+    baselineCountdown.textContent = '3';
+    baselineHint.textContent = '画面を正面から見て、リラックスしてお待ちください。';
+    baselineRing.style.setProperty('--baseline-angle', '0deg');
     let skipped = false;
     const onSkip = () => { skipped = true; };
     baselineSkip.addEventListener('click', onSkip, { once: true });
@@ -847,15 +899,17 @@
 
     restSkip?.removeEventListener('click', onSkip);
     document.body.style.overflow = '';   // スクロール抑止を解除
-    HeartHub.logEvent('rest_' + phase + '_end', -1);
+    HeartHub.logEvent('rest_' + phase + '_end', -1, { skipped, plannedMs: durationMs });   // スキップ有無と予定長を保存データに残す
     if (state.useCamera) FaceRecorder.logEvent('rest_' + phase + '_end', { skipped });
   }
 
   startNoBtn.addEventListener('click', async () => {
+    if (sessionStarting) return;
+    lockStartButtons(true);
     state.useCamera = false;
     FaceRecorder.showPanel(false);
     await beginSession();   // ECG 採集を開始（カメラ無しでも心電は記録）
-    await runRestMeasurement('pre');  // 安静時測定（前・3分）
+    await runRestMeasurement('pre');  // 安静時測定（前）
     goQuiz();
   });
 
@@ -899,6 +953,12 @@
         if (resume) {
           state.current = Math.min(persisted.current, total - 1);
           state.answers = [...persisted.answers];
+          // 再開セッションであることを時間線と保存データに明示（interaction[] の
+          // enterCount=0/finalAnswer=null が「記録故障」ではなく「別の座りで回答済み」と分かるように）
+          HeartHub.logEvent('session_resumed', -1, {
+            restoredCount: filled, resumeAt: state.current,
+            savedAt: persisted.savedAt, restoredAnswers: persisted.answers.slice()
+          });
           renderQuestion();
           switchScreen('quiz');
           return;
@@ -956,6 +1016,7 @@
   }
 
   function selectAnswer(idx) {
+    const unchanged = state.answers[state.current] === idx;   // 同値の再選択（選択肢クリック→Enter 等）
     state.answers[state.current] = idx;
     // UI
     [...optionsList.children].forEach((el, j) => {
@@ -965,6 +1026,7 @@
       el.setAttribute('tabindex', sel ? '0' : '-1');
     });
     nextBtn.disabled = false;
+    if (unchanged) return;   // 値が変わらない再選択はイベント・危機トリガー・保存を発火しない（changes 指標の水増し防止）
     if (state.useCamera) FaceRecorder.logEvent('answer_selected', { a: idx });
     HeartHub.logEvent('answer_selected', state.current, { a: idx });   // 選択値を時間線に記録（変更履歴・反応時間の算出用）
     persist();
@@ -1025,6 +1087,10 @@
   // keyboard: 0/1/2/3 to answer, Enter to advance
   document.addEventListener('keydown', (e) => {
     if (!screens.quiz.classList.contains('active')) return;
+    // 危機介入モーダル表示中はクイズ操作を完全に遮断する。
+    // （Enter がモーダルを閉じると同時に「次へ/結果を見る」を発火し、数字キーが
+    //  モーダルの裏で回答を書き換えてしまう事故の防止 — 危機設問は最後の設問であることが多い）
+    if (crisisModal && !crisisModal.classList.contains('hidden')) return;
     if (/^[0-9]$/.test(e.key)) {
       const idx = parseInt(e.key, 10);
       const q = state.survey.questions[state.current];
@@ -1037,11 +1103,14 @@
   });
 
   // ---------- Finish ----------
+  let finishing = false;   // 再入ガード（安静後=0秒設定時、次へボタンの連打で finish が二重実行され得る）
   async function finish() {
+    if (finishing) return;
+    finishing = true;
     const result = SurveyEngine.score(state.survey, state.answers);
     state.result = result;
 
-    await runRestMeasurement('post');  // 安静時測定（後・3分）— ECG/録画は継続中
+    await runRestMeasurement('post');  // 安静時測定（後）— ECG/録画は継続中
 
     if (state.useCamera) {
       nextBtn.disabled = true;
@@ -1114,7 +1183,21 @@
       ...data,
       survey: { id: survey.id, name: survey.name },
       result: state.result,
-      answers: state.answers.map((a, i) => ({ q: i + 1, title: survey.questions[i].title, score: a }))
+      answers: state.answers.map((a, i) => ({ q: i + 1, title: survey.questions[i].title, score: a })),
+      // 自動保存（サーバ/クライアントDL）と同じ心拍・時間線データを手動エクスポートにも含める。
+      // 以前はレコーダーログのみで、events/segments/interaction/ppg が全て欠けていた。
+      qids_events: HeartHub.getEvents(),
+      segments: HeartHub.buildSegments(),
+      rest_segments: HeartHub.buildRestSegments(),
+      baseline_segment: HeartHub.buildBaselineSegment(),
+      interaction: HeartHub.buildInteraction(),
+      sources: HeartHub.getEnabled(),
+      ppg: HeartHub.isEnabled('ppg') ? {
+        device: (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo()) || null,
+        beats: PpgSource.getBeats(),
+        raw_samples: (PpgSource.getRaw().idx || []).length   // 生波形は ppg_raw.csv 側で保存
+      } : null,
+      sync: { hubStartWall: HeartHub.startWall, ecgStartWall: EcgSource.startWall, recorderStartIso: data.meta?.sessionStart || null }
     };
   }
 
@@ -1170,19 +1253,45 @@
     extractThumbPh.hidden = false;
     extractPhase.textContent = PHASE_LABELS['loading-library'];
   }
-  function showExtractDone(handoffId) {
+  function showExtractDone(handoffId, doc, persistResult) {
     extractProgress.hidden = true;
     extractDoneBox.hidden  = false;
     extractTitle.textContent = '抽出完了';
-    const url = `analyze.html?handoff=${encodeURIComponent(handoffId)}`;
-    extractOpenBtn.href = url;
-    extractOpenBtn.onclick = () => {
-      // Close the modal after the user's click opens the new tab.
-      setTimeout(() => hideExtractModal(), 50);
-    };
-    extractOpenSameTab.onclick = () => {
-      location.href = url;
-    };
+
+    // 保存状態の明示（サーバ保存 or 自動DL のどちらが効いたかを操作者に見せる）
+    const note = $('extractPersistNote');
+    if (note && persistResult) {
+      note.textContent = persistResult.uploaded
+        ? `✓ 特徴データをサーバに保存しました（${persistResult.name}）。自動ダウンロードも実行済みです。`
+        : `特徴データの自動ダウンロードを実行しました（${persistResult.name}）。ブロックされた場合は下の「特徴データを保存」を押してください。`;
+    }
+    // ジェスチャ付きの確実なDL経路
+    const dlBtn = $('extractDownloadBtn');
+    if (dlBtn) {
+      dlBtn.onclick = () => {
+        try {
+          downloadBlob(new Blob([JSON.stringify(doc)], { type: 'application/json' }),
+            (persistResult && persistResult.name) || ((state.sessionName || ('qids-j_' + timestamp())) + '.landmarks.json'));
+        } catch (e) { alert('保存に失敗しました: ' + (e.message || e)); }
+      };
+    }
+
+    if (handoffId) {
+      const url = `analyze.html?handoff=${encodeURIComponent(handoffId)}`;
+      extractOpenBtn.href = url;
+      extractOpenBtn.onclick = () => {
+        // Close the modal after the user's click opens the new tab.
+        setTimeout(() => hideExtractModal(), 50);
+      };
+      extractOpenSameTab.onclick = () => {
+        location.href = url;
+      };
+    } else {
+      // handoff（IndexedDB）失敗時：ビューアーはダウンロード済み JSON のドロップで開ける
+      extractOpenBtn.removeAttribute('href');
+      extractOpenBtn.onclick = (e) => { e.preventDefault(); alert('ブラウザ内の受け渡しに失敗しました。analyze.html を開き、ダウンロード済みの landmarks JSON をドロップしてください。'); };
+      extractOpenSameTab.onclick = () => { location.href = 'analyze.html'; };
+    }
     extractCloseBtn.onclick = () => hideExtractModal();
   }
   function hideExtractModal() {
@@ -1241,9 +1350,12 @@
       // Instead, transform the modal into a "done" state with an explicit
       // button the user clicks → window.open runs inside that gesture →
       // no popup blocker.
-      const id = await saveHandoff(doc);
-      persistLandmarks(doc);   // IndexedDB(TTL) に頼らず抽出結果を永続化（サーバ保存＋自動DL）
-      showExtractDone(id);
+      // 恒久保存を先に（IndexedDB の quota 失敗で抽出結果ごと失わないよう、handoff より前）。
+      const persistResult = await persistLandmarks(doc);
+      let id = null;
+      try { id = await saveHandoff(doc); }
+      catch (e) { console.warn('handoff save failed (analyze via downloaded json instead):', e); }
+      showExtractDone(id, doc, persistResult);
     } catch (e) {
       hideExtractModal();
       if (e?.name === 'AbortError') {
@@ -1264,15 +1376,21 @@
   // ②常にクライアント側へ自動ダウンロード（ジェスチャ無しでブロックされても ①と IndexedDB が保険）。
   async function persistLandmarks(doc) {
     const base = (state.sessionName || ('qids-j_' + timestamp())) + '.landmarks.json';
+    const result = { name: base, uploaded: false, downloadTried: false };
     let json;
-    try { json = JSON.stringify(doc); } catch (e) { console.warn('landmarks stringify failed', e); return; }
+    try { json = JSON.stringify(doc); } catch (e) { console.warn('landmarks stringify failed', e); return result; }
     if (ecgServerUp) {
       try {
-        await fetch('/api/upload-landmarks?name=' + encodeURIComponent(base),
+        const res = await fetch('/api/upload-landmarks?name=' + encodeURIComponent(base),
           { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json });
+        result.uploaded = res.ok;   // HTTP エラーも失敗として扱う
+        if (!res.ok) console.warn('landmark upload failed: HTTP', res.status);
       } catch (e) { console.warn('landmark upload failed', e); }
     }
-    try { downloadBlob(new Blob([json], { type: 'application/json' }), base); } catch (e) {}
+    // ジェスチャ無しの自動DLはブラウザにブロックされ得る（検知不能）。
+    // 確実な保存経路として、完了ボックスに手動DLボタンも用意する（showExtractDone）。
+    try { downloadBlob(new Blob([json], { type: 'application/json' }), base); result.downloadTried = true; } catch (e) {}
+    return result;
   }
 
   function formatEta(sec) {
@@ -1355,9 +1473,12 @@
     state.crisisShownForSession = false;
     state.sessionName = null;
     HeartHub.reset();
+    FaceRecorder.reset();   // 前の被験者のイベントログ・録画 Blob・カメラメタを破棄（跨被験者汚染とメモリ滞留の防止）
     FaceRecorder.showPanel(false);
     clearSubjectForm();   // ← 前の被験者の入力をクリア（量表選択とカメラ設定は維持）
     [consentMedical, consentAge, consentData, consentCamera].forEach(el => { el.checked = false; });
+    lockStartButtons(false);   // 開始ボタンの相互ロックを解除
+    finishing = false;         // finish 再入ガードも解除（次のセッションのため）
     updateStartButtonsDisabled();
     startCamBtn.innerHTML = '<span class="ic">●</span> カメラを使って開始';
     switchScreen('subject');   // 新しい計測 → 被験者情報から
@@ -1410,9 +1531,9 @@
   });
 
   // ページ離脱時は BLE を明示的に切断し、BlueZ 側の“ゾンビ接続”残留を防ぐ
-  // （ゾンビ接続は次回の通知受信不可＝「受信なし」の主因）。pagehide が最も確実、
-  //  beforeunload も保険で。タブ切替では切らない（visibilitychange は使わない）。
+  // （ゾンビ接続は次回の通知受信不可＝「受信なし」の主因）。
+  // pagehide のみ使用：beforeunload は「離脱確認ダイアログでキャンセルして残留」した場合にも
+  // 発火してしまい、クイズ継続中に PPG を切断して以降のデータを失う事故になる。
   const _disconnectBle = () => { try { PpgSource.disconnect(); } catch (e) {} };
   window.addEventListener('pagehide', _disconnectBle);
-  window.addEventListener('beforeunload', _disconnectBle);
 })();

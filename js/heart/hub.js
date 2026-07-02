@@ -218,7 +218,11 @@ const HeartHub = (() => {
   function attachSavePayload(payload) {
     payload.sources = { ecg: enabled.ecg, ppg: enabled.ppg };
     if (enabled.ppg) {
-      payload.ppg = { beats: PpgSource.getBeats(), raw: PpgSource.getRaw() };
+      payload.ppg = {
+        device: (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo()) || null,   // 個体識別（複数台環境の監査用）
+        beats: PpgSource.getBeats(),
+        raw: PpgSource.getRaw()
+      };
     }
     return payload;
   }
