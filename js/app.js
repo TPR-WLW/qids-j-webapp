@@ -512,15 +512,18 @@
 
     const now = Date.now();
     const sinceConnect = ppgConnectedAt ? (now - ppgConnectedAt) : 0;
+    // 接続中は常にどの個体（XIAO-HR-XXXX）に繋がっているかを状態行に表示
+    // （複数台環境で「別の個体に繋がっていた」事故を目視で発見できるように）
+    const devName = (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo() || {}).name || '';
+    const withDev = (msg) => msg + (devName ? ' — ' + devName : '');
     if (live.online) {
       setPpgDot('ok');
-      const devName = (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo() || {}).name || '';
-      setPpgStatusText((live.finger ? '受信中' : '受信中（指先を光窓に当ててください）') + (devName ? ' — ' + devName : ''));
+      setPpgStatusText(withDev(live.finger ? '受信中' : '受信中（指先を光窓に当ててください）'));
       if (ppgWarn) ppgWarn.style.display = 'none';
       ppgLastOnlineAt = now;
       ppgAutoRecovered = false;   // 復帰したので次のゾンビにも自動リカバリ可
     } else if (ppgRecovering) {
-      setPpgDot('wait'); setPpgStatusText('受信途絶 → 自動再接続中…');
+      setPpgDot('wait'); setPpgStatusText(withDev('受信途絶 → 自動再接続中…'));
       if (ppgWarn) ppgWarn.style.display = 'none';
     } else {
       // 未 online。受信が途絶えている時間を測る：一度でも受信していれば最後の受信時刻から、
@@ -529,23 +532,28 @@
       if (stallMs > 3000) {
         // 3秒以上データなし＝半開/ゾンビ/占有。まず自動で1回だけ切断→再接続（既授権のみ・ダイアログ無し）。
         if (!ppgAutoRecovered && PpgSource.hasGranted()) {
-          setPpgDot('wait'); setPpgStatusText('受信途絶 → 自動再接続中…');
+          setPpgDot('wait'); setPpgStatusText(withDev('受信途絶 → 自動再接続中…'));
           if (ppgWarn) ppgWarn.style.display = 'none';
           ppgAutoRecover();
         } else {
           setPpgDot('err');
-          setPpgStatusText('受信なし（復帰せず）');
+          setPpgStatusText(withDev('受信なし（復帰せず）'));
           if (ppgWarn) {
             ppgWarn.className = 'ppg-warn';
             ppgWarn.style.display = '';
             ppgWarn.innerHTML = '⚠️ <strong>3秒以上データが届いていません</strong>（自動再接続でも復帰せず）。'
-              + 'ESP32 は接続断（conn=0）と認識しているのに Chrome 側が接続を掴んだままの<strong>半開／ゾンビ接続</strong>の可能性が高いです。<br>'
-              + '対処：① <strong>ESP32 を電源入れ直し</strong>（最も確実）　② OS の Bluetooth 設定でこの機器を「切断／削除」（<strong>ペアリングしない</strong>）　③「切断」→ もう一度「接続」。';
+              + (devName ? '接続先: <strong>' + devName + '</strong>。<br>' : '')
+              + '考えられる原因は 2 つ：<br>'
+              + '<strong>A. センサー側が停止</strong>（この固件はセンサー未検出時は何も送らない）→ '
+              + '① <strong>ESP32 を電源入れ直し</strong>（最も確実）　② センサーの配線（3V3/GND/SDA=D4/SCL=D5）を確認。<br>'
+              + '<strong>B. 半開／ゾンビ接続</strong>（ESP32 は切断と認識、Chrome 側が掴んだまま）→ '
+              + '③ OS の Bluetooth 設定でこの機器を「切断／削除」（<strong>ペアリングしない</strong>）　④「切断」→ もう一度「接続」。<br>'
+              + '複数台ある場合は、<strong>指を当てているセンサーの板</strong>と上記の接続先（末尾ID）が一致しているかも確認してください。';
           }
         }
       } else {
         setPpgDot('wait');
-        setPpgStatusText(ppgEverOnline ? '受信が一時中断…' : '受信待ち…');
+        setPpgStatusText(withDev(ppgEverOnline ? '受信が一時中断…' : '受信待ち…'));
         if (ppgWarn) ppgWarn.style.display = 'none';
       }
     }

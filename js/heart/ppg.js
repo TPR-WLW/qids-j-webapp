@@ -31,7 +31,7 @@ const PpgSource = (() => {
   // ---- BLE 常量（与固件一致）----
   const SVC = '12345678-1234-5678-1234-56789abcdef0';
   const CHR = '12345678-1234-5678-1234-56789abcdef1';
-  const NAME_PREFIX = 'XIAO';
+  const NAME_PREFIX = 'XIAO-HR';   // 'XIAO' だと同系の別プロジェクト機（XIAO-PWR-… 電力計）が選択肢に混入するため HR に限定
   const FS = 100;                 // 有效采样率(Hz)，与固件一致
   const FINGER_TH = 50000;        // IR 阈值：判断是否有手指
   const WIN = 60;                 // HRV 显示用滑窗心拍数
