@@ -150,7 +150,11 @@
   function makeSessionName() {
     const id = sanitizeId(state.subject?.id);
     const sid = state.survey ? state.survey.id : 'survey';
-    return id + '_' + sid + '_' + timestamp();
+    // ミリ秒まで含めてセッション名を一意にする（同一 ID を同じ秒内に開始しても
+    // 別人/別回のファイルを黙って上書きしないように — ECG CSV は開始時にこの名前で
+    // 書かれるため、生成時点で一意にするのが安全）。
+    const ms = String(new Date().getMilliseconds()).padStart(3, '0');
+    return id + '_' + sid + '_' + timestamp() + ms;
   }
 
   // Start ECG + reset the session timeline. Called when leaving the intro.
@@ -1060,7 +1064,18 @@
   crisisContinue?.addEventListener('click', hideCrisisModal);
   crisisModal?.addEventListener('click', (e) => { if (e.target === crisisModal) hideCrisisModal(); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !crisisModal.classList.contains('hidden')) hideCrisisModal();
+    if (!crisisModal || crisisModal.classList.contains('hidden')) return;
+    if (e.key === 'Escape') { hideCrisisModal(); return; }
+    // フォーカストラップ：モーダル表示中は Tab が背後の（非表示の）クイズへ抜けないように、
+    // モーダル内のフォーカス可能要素（電話リンク・続行ボタン）だけを循環させる。
+    if (e.key === 'Tab') {
+      const f = crisisModal.querySelectorAll('a[href], button:not([disabled])');
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !crisisModal.contains(active))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (active === last || !crisisModal.contains(active))) { e.preventDefault(); first.focus(); }
+    }
   });
 
   prevBtn.addEventListener('click', () => {
@@ -1517,7 +1532,10 @@
     }[c]));
   }
   function escapeCsv(v) {
-    const s = String(v ?? '');
+    let s = String(v ?? '');
+    // CSV 数式インジェクション対策：= + - @ 等で始まるセルは Excel が数式として実行し得るので
+    // 先頭に ' を付けて無害化（自由記述等が将来 CSV に載っても安全なように）。
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
     if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   }

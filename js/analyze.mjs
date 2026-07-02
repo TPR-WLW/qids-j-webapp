@@ -1291,17 +1291,15 @@ function openHandoffDb() {
 }
 
 async function consumeHandoff(id) {
+  // 読み取りのみ（削除しない）。以前は取得と同時に削除していたため、
+  // 「新タブで開く」→「このタブで開く」の 2 ボタン併用や、読み込み失敗後のリロード再試行で
+  // データが消えていた。掃除は app.js 側の 24h TTL prune に任せる。
   const db = await openHandoffDb();
   const data = await new Promise((resolve, reject) => {
-    const tx = db.transaction(HANDOFF_STORE, 'readwrite');
+    const tx = db.transaction(HANDOFF_STORE, 'readonly');
     const store = tx.objectStore(HANDOFF_STORE);
     const getReq = store.get(id);
-    getReq.onsuccess = () => {
-      const rec = getReq.result;
-      if (!rec) { resolve(null); return; }
-      store.delete(id);          // 一度使ったら削除
-      resolve(rec.data);
-    };
+    getReq.onsuccess = () => { const rec = getReq.result; resolve(rec ? rec.data : null); };
     getReq.onerror = () => reject(getReq.error);
   });
   db.close();

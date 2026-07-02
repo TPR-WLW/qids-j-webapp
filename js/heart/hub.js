@@ -99,15 +99,22 @@ const HeartHub = (() => {
     for (let qi = 0; qi < n; qi++) {
       const enters = events.filter(e => e.type === 'question_enter' && e.q === qi);
       const picks = events.filter(e => e.type === 'answer_selected' && e.q === qi);
-      const firstEnter = enters.length ? enters[0].ts : null;
       const firstPick = picks.length ? picks[0].ts : null;
+      // 反応時間は「最初の回答の直前にこの設問に入った時刻」から測る。
+      // 「前へ」で他設問へ寄り道してから戻って回答した場合、最初の入場時刻から測ると
+      // 寄り道時間まで含んでしまうため、直近の入場を基準にする。
+      let reactEnter = null;
+      if (firstPick != null) {
+        for (const e of enters) { if (e.ts <= firstPick) reactEnter = e.ts; else break; }
+        if (reactEnter == null && enters.length) reactEnter = enters[0].ts;
+      }
       const dwellMs = segs.filter(s => s.q === qi).reduce((sum, s) => sum + Math.max(0, s.endTs - s.startTs), 0);
       const history = picks.map(p => ({ a: (p.a != null ? p.a : null), ts: p.ts }));
       out.push({
         q: qi,
         questionNumber: qi + 1,
         enterCount: enters.length,
-        reactionMs: (firstEnter != null && firstPick != null) ? (firstPick - firstEnter) : null,
+        reactionMs: (reactEnter != null && firstPick != null) ? (firstPick - reactEnter) : null,
         dwellMs: enters.length ? dwellMs : null,
         changes: Math.max(0, picks.length - 1),
         answerHistory: history,
