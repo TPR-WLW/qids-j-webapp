@@ -486,6 +486,11 @@
     try { list = await PpgSource.listGranted(); } catch (e) {}
     const connected = (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo()) || null;
     const last = (PpgSource.getLastDevice && PpgSource.getLastDevice()) || null;
+    // getDevices() が空（Linux Chrome で new-permissions-backend 無効時など）でも、
+    // 現在接続中/前回使った個体は一覧に出す（名前が見えないと選べないため）。
+    const merge = (d) => { if (d && d.id && d.name && !list.some(x => x.id === d.id)) list.push({ id: d.id, name: d.name }); };
+    merge(connected);
+    merge(last);
     const prev = ppgDeviceSelect.value;
     ppgDeviceSelect.innerHTML = '';
     list.forEach(d => {

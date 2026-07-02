@@ -157,7 +157,10 @@ const PpgSource = (() => {
         resetDetect();
         return true;
       }
-      throw new Error('指定されたデバイスが見つかりません（電源と距離を確認し、一覧を更新してください）');
+      // getDevices() が空（永続権限無効な Linux Chrome 等）で id を再取得できない。
+      // 例外にせず選択ダイアログにフォールバック（noPrompt 時のみ例外）。
+      if (opts.noPrompt) throw new Error('指定デバイスを getDevices で再取得できません（永続権限が無効）');
+      onLog('warn', '指定デバイスを再取得できないため選択ダイアログを表示します');
     }
     // ① 既授権デバイスがあれば選択ダイアログ無しで再接続（1タップ）
     const granted = knownDevice || await _findGranted();
