@@ -718,6 +718,7 @@
     try {
       const out = { ...payload };
       out.schema = 'qids-session-client-v1';   // クライアント直DL版：生入力のみ（HRV/phases はサーバ未算出。beats/segments から再計算可）
+      delete out.sentAt;   // sentAt はサーバの clock_skew_ms 算出用。クライアントには第2の時計が無く無意味な残留キーになるため落とす
       // サーバ保存の session.json とスキーマを揃える：
       // ・イベント配列のキーは qids_events（サーバ/手動エクスポートと同一）
       // ・ppg.beats は常に配列、件数は beats_count（サーバは beats_count + csv ポインタ）
@@ -1216,7 +1217,7 @@
       schema: 'qids-session-manual-v1',   // 手動エクスポート版：レコーダーログ + HeartHub 時系列（HRV 未算出）
       survey: { id: survey.id, name: survey.name },
       result: state.result,
-      answers: state.answers.map((a, i) => ({ q: i + 1, title: survey.questions[i].title, score: a })),
+      answers: state.answers.map((a, i) => ({ q: i + 1, title: survey.questions[i].title, domain: survey.questions[i].domain, score: a })),   // domain も含める（他2経路と揃える）
       // 自動保存（サーバ/クライアントDL）と同じ心拍・時間線データを手動エクスポートにも含める。
       // 以前はレコーダーログのみで、events/segments/interaction/ppg が全て欠けていた。
       qids_events: HeartHub.getEvents(),
