@@ -470,8 +470,36 @@
     if (ppgControls) ppgControls.style.display = sel.ppg ? '' : 'none';
     updatePpgStatus();
     // 既授権デバイスの有無を探ってボタン表示を「再接続」に切替（選択ダイアログ無しで繋げる）
-    if (sel.ppg && PpgSource.isSupported()) PpgSource.probeGranted().then(updatePpgStatus).catch(() => {});
+    if (sel.ppg && PpgSource.isSupported()) {
+      PpgSource.probeGranted().then(updatePpgStatus).catch(() => {});
+      populatePpgDevices();   // 下拉框に既授権の XIAO-HR 個体（フルネーム）を列挙
+    }
     updatePairWidgetVisibility();
+  }
+
+  // デバイス下拉框：既授権の XIAO-HR 個体をフルネームで列挙。
+  // 初期選択は「接続中の個体 > 前回使った個体 > 先頭」。末尾に「ペア設定…」（選択ダイアログ）を常設。
+  const ppgDeviceSelect = $('ppgDeviceSelect');
+  async function populatePpgDevices() {
+    if (!ppgDeviceSelect || !PpgSource.isSupported()) return;
+    let list = [];
+    try { list = await PpgSource.listGranted(); } catch (e) {}
+    const connected = (PpgSource.getDeviceInfo && PpgSource.getDeviceInfo()) || null;
+    const last = (PpgSource.getLastDevice && PpgSource.getLastDevice()) || null;
+    const prev = ppgDeviceSelect.value;
+    ppgDeviceSelect.innerHTML = '';
+    list.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.id; opt.textContent = d.name;
+      ppgDeviceSelect.appendChild(opt);
+    });
+    const optNew = document.createElement('option');
+    optNew.value = '__new__';
+    optNew.textContent = list.length ? '別のデバイスをペア設定…' : 'デバイスを選択（ペア設定）…';
+    ppgDeviceSelect.appendChild(optNew);
+    // 初期選択の優先順位
+    const pick = (id) => { if (id && [...ppgDeviceSelect.options].some(o => o.value === id)) { ppgDeviceSelect.value = id; return true; } return false; };
+    pick(connected && connected.id) || pick(prev !== '__new__' ? prev : null) || pick(last && last.id) || (ppgDeviceSelect.value = list.length ? list[0].id : '__new__');
   }
   function setPpgDot(kind) { if (ppgDot) ppgDot.className = 'ppg-dot ' + kind; }
   function setPpgStatusText(t) {
@@ -596,10 +624,17 @@
       setTimeout(updatePpgStatus, 200); return;
     }
     if (!PpgSource.isSupported()) { alert('このブラウザは Web Bluetooth に対応していません。Chrome または Edge をご利用ください。'); return; }
-    ppgConnectBtn.disabled = true; setPpgDot('wait'); ppgStatus.textContent = PpgSource.hasGranted() ? '再接続中…' : 'デバイス選択中…';
+    // 下拉框で選ばれた個体に接続（'__new__' は選択ダイアログでペア設定）
+    const selId = ppgDeviceSelect ? ppgDeviceSelect.value : '';
+    const opts = (selId && selId !== '__new__') ? { deviceId: selId } : {};
+    ppgConnectBtn.disabled = true; setPpgDot('wait');
+    ppgStatus.textContent = opts.deviceId
+      ? ('接続中… — ' + (ppgDeviceSelect.selectedOptions[0]?.textContent || ''))
+      : 'デバイス選択中…';
     try {
-      await PpgSource.connect();
+      await PpgSource.connect(opts);
       ppgConnectedAt = Date.now(); ppgEverOnline = false; ppgAutoRecovered = false;   // 占有検出タイマーの起点
+      populatePpgDevices();   // 新規ペア設定した個体を一覧に反映し、接続中の個体を選択状態に
       // 状態更新＋兜底の波形描画を 250ms 周期で（データ到着時は onData→rAF が低遅延で先に描く）。
       // 兜底があるので、データが来ない間も「受信待ち…」基線が表示され、真っ黒で固まらない。
       if (!ppgWaveTimer) ppgWaveTimer = setInterval(() => { updatePpgStatus(); PpgSource.drawWave(); }, 250);

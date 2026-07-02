@@ -113,6 +113,17 @@ const PpgSource = (() => {
   async function probeGranted() { knownDevice = await _findGranted(); return !!knownDevice; }
   function hasGranted() { return !!knownDevice; }
   function getDeviceInfo() { return device ? { id: device.id || null, name: device.name || null } : null; }
+  function getLastDevice() { return _loadLastDevice(); }   // {id,name}|null（UI が下拉框の初期選択に使う）
+
+  // 既授権の XIAO-HR デバイス一覧（UI の下拉框用。フルネームで返す）
+  async function listGranted() {
+    if (!isSupported() || !navigator.bluetooth.getDevices) return [];
+    try {
+      return (await navigator.bluetooth.getDevices())
+        .filter(d => (d.name || '').startsWith(NAME_PREFIX))
+        .map(d => ({ id: d.id || '', name: d.name || '' }));
+    } catch (e) { return []; }
+  }
 
   function _bindDevice(dev) {
     device = dev;
@@ -132,6 +143,22 @@ const PpgSource = (() => {
 
   async function _connectImpl(opts) {
     if (!isSupported()) throw new Error('このブラウザは Web Bluetooth 非対応です（Chrome / Edge をご利用ください）。');
+    // ⓪ UI の下拉框で個体が明示指定された場合：その id の既授権デバイスに限定して接続
+    if (opts.deviceId) {
+      const devs = navigator.bluetooth.getDevices ? await navigator.bluetooth.getDevices() : [];
+      const hit = devs.find(d => d.id === opts.deviceId && (d.name || '').startsWith(NAME_PREFIX));
+      if (hit) {
+        _bindDevice(hit);
+        wantConnected = true;
+        await _gattConnect();
+        knownDevice = device;
+        _saveLastDevice(device);
+        onLog('info', 'PPG 接続（指定デバイス）: ' + (device.name || NAME_PREFIX));
+        resetDetect();
+        return true;
+      }
+      throw new Error('指定されたデバイスが見つかりません（電源と距離を確認し、一覧を更新してください）');
+    }
     // ① 既授権デバイスがあれば選択ダイアログ無しで再接続（1タップ）
     const granted = knownDevice || await _findGranted();
     if (granted) {
@@ -461,7 +488,7 @@ const PpgSource = (() => {
 
   return {
     init, isSupported, isConnected, connect, disconnect, startTest,
-    probeGranted, hasGranted, getSps, getDeviceInfo,
+    probeGranted, hasGranted, getSps, getDeviceInfo, listGranted, getLastDevice,
     begin, stop, reset, getLive, getBeats, getRaw, getRawCsv, getRawAnchors,
     attachCanvas, drawWave
   };

@@ -176,6 +176,10 @@
 
           <div id="ppgControls" class="ppg-controls" style="display:none">
             <div class="ppg-row">
+              <label class="tiny muted" for="ppgDeviceSelect" style="margin:0">デバイス</label>
+              <select id="ppgDeviceSelect" class="select" style="width:auto; min-width:190px; padding:6px 8px; font-size:13px">
+                <option value="__new__">デバイスを選択（ペア設定）…</option>
+              </select>
               <button type="button" id="ppgConnectBtn" class="btn btn-outline btn-sm">PPG 接続</button>
               <button type="button" id="ppgTestBtn" class="btn btn-ghost btn-sm">信号テスト</button>
               <span class="ppg-state"><span id="ppgDot" class="ppg-dot off"></span><span id="ppgStatus" class="ppg-status-text">未接続</span></span>
@@ -188,7 +192,7 @@
             </div>
             <canvas id="ppgWave" width="640" height="72" class="ppg-wave" aria-label="PPG 脈波プレビュー"></canvas>
             <div id="ppgWarn" class="ppg-warn" style="display:none"></div>
-            <p class="tiny muted" style="margin:4px 0 0">※「接続」→ <strong>XIAO-HR-<span style="letter-spacing:1px">〇〇〇〇</span></strong>（末尾はデバイス固有ID）を選択 → 指先を光窓にやさしく当てて静止。複数台ある場合はデバイス本体のラベルと末尾IDを照合してください。両方選ぶと myBeat と PPG を同時記録します。</p>
+            <p class="tiny muted" style="margin:4px 0 0">※ 上の<strong>デバイス</strong>欄から使う個体（<strong>XIAO-HR-〇〇〇〇</strong>）を選んで「接続」。初回は「デバイスを選択（ペア設定）…」からペア設定してください。接続後は下の波形・数値が<strong>リアルタイム</strong>に流れます（指先を光窓にやさしく当てて静止）。複数台ある場合はデバイス本体のラベルと末尾IDを照合。両方選ぶと myBeat と PPG を同時記録します。</p>
           </div>
           <p class="tiny muted" style="margin:6px 0 0">心拍 / HRV を測定しない場合は、両方オフのままでも回答できます。</p>
         </div>
