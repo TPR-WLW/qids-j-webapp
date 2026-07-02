@@ -453,7 +453,8 @@
   const ppgWarn       = $('ppgWarn');
   let ppgWaveTimer = null;
   let ppgConnectedAt = 0, ppgEverOnline = false, ppgLastOnlineAt = 0;   // 占有/受信途絶 検出用
-  let ppgAutoRecovered = false, ppgRecovering = false;   // ゾンビ接続の自動リカバリ（1回だけ）
+  let ppgRecovering = false, ppgLastRecoverAt = 0;   // 自動リカバリ（クールダウン駆動; 抖動防止）
+  const PPG_RECOVER_COOLDOWN_MS = 12000;             // 自動再接続は最短でも12秒間隔（センサ断続で暴走しない）
   let ppgFlashMsg = '', ppgFlashUntil = 0;         // 信号テスト結果を数秒間だけ状態行に表示
   if (ppgWave) PpgSource.attachCanvas(ppgWave);
 
@@ -554,7 +555,6 @@
       setPpgStatusText(withDev(live.finger ? '受信中' : '受信中（指先を光窓に当ててください）'));
       if (ppgWarn) ppgWarn.style.display = 'none';
       ppgLastOnlineAt = now;
-      ppgAutoRecovered = false;   // 復帰したので次のゾンビにも自動リカバリ可
     } else if (ppgRecovering) {
       setPpgDot('wait'); setPpgStatusText(withDev('受信途絶 → 自動再接続中…'));
       if (ppgWarn) ppgWarn.style.display = 'none';
@@ -563,10 +563,13 @@
       // 未受信なら接続時刻から。「一度受信 → その後途絶」（=データ流通後の半開）も拾えるようにする。
       const stallMs = ppgEverOnline ? (now - ppgLastOnlineAt) : sinceConnect;
       if (stallMs > 3000) {
-        // 3秒以上データなし＝半開/ゾンビ/占有。まず自動で1回だけ切断→再接続（既授権のみ・ダイアログ無し）。
-        if (!ppgAutoRecovered && PpgSource.hasGranted()) {
+        // 3秒以上データなし。自動再接続はクールダウン駆動（最短12秒間隔）。
+        // センサーが断続的に1〜2パケットだけ出す状態でも、online 明滅で暴走せず、
+        // 警告表示が安定する（=待ち↔なしの往復ジッターを解消）。
+        if (PpgSource.hasGranted() && (now - ppgLastRecoverAt > PPG_RECOVER_COOLDOWN_MS)) {
           setPpgDot('wait'); setPpgStatusText(withDev('受信途絶 → 自動再接続中…'));
           if (ppgWarn) ppgWarn.style.display = 'none';
+          ppgLastRecoverAt = now;
           ppgAutoRecover();
         } else {
           setPpgDot('err');
@@ -601,7 +604,7 @@
   }
   // ゾンビ/半開接続の自動リカバリ：切断 → 少し待って再接続（既授権デバイスなのでダイアログ無し）。
   async function ppgAutoRecover() {
-    ppgRecovering = true; ppgAutoRecovered = true;
+    ppgRecovering = true;
     try {
       PpgSource.disconnect();
       await new Promise(r => setTimeout(r, 900));   // BlueZ が ACL を落とす猶予
@@ -625,7 +628,7 @@
     if (ppgRecovering) { updatePpgStatus(); return; }   // 自動リカバリ中の手動操作は無視（connect 競合の防止）
     if (PpgSource.isConnected()) {
       PpgSource.disconnect();
-      ppgConnectedAt = 0; ppgEverOnline = false; ppgFlashUntil = 0; ppgAutoRecovered = false;
+      ppgConnectedAt = 0; ppgEverOnline = false; ppgFlashUntil = 0; ppgLastRecoverAt = 0;
       setTimeout(updatePpgStatus, 200); return;
     }
     if (!PpgSource.isSupported()) { alert('このブラウザは Web Bluetooth に対応していません。Chrome または Edge をご利用ください。'); return; }
@@ -638,7 +641,7 @@
       : 'デバイス選択中…';
     try {
       await PpgSource.connect(opts);
-      ppgConnectedAt = Date.now(); ppgEverOnline = false; ppgAutoRecovered = false;   // 占有検出タイマーの起点
+      ppgConnectedAt = Date.now(); ppgEverOnline = false; ppgLastRecoverAt = 0;   // 占有検出タイマーの起点（手動接続はクールダウンもリセット）
       populatePpgDevices();   // 新規ペア設定した個体を一覧に反映し、接続中の個体を選択状態に
       // 状態更新＋兜底の波形描画を 250ms 周期で（データ到着時は onData→rAF が低遅延で先に描く）。
       // 兜底があるので、データが来ない間も「受信待ち…」基線が表示され、真っ黒で固まらない。
